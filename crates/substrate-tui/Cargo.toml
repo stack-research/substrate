@@ -1,0 +1,30 @@
+[package]
+name = "substrate-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "substrate"
+path = "src/main.rs"
+
+[dependencies]
+substrate-core.workspace = true
+
+anyhow.workspace = true
+base64.workspace = true
+clap.workspace = true
+crossterm.workspace = true
+form_urlencoded.workspace = true
+notify.workspace = true
+ratatui.workspace = true
+textwrap = "0.16"
+tiny_http.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tui-textarea.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+predicates.workspace = true
+tempfile.workspace = true

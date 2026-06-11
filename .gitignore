@@ -1,0 +1,77 @@
+# --- Rust ---------------------------------------------------------------------
+
+/target/
+**/*.rs.bk
+*.pdb
+
+# Profiling / coverage (if you add these later)
+*.profraw
+*.profdata
+coverage/
+lcov.info
+
+# --- macOS --------------------------------------------------------------------
+
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# --- Linux --------------------------------------------------------------------
+
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# --- Editors ------------------------------------------------------------------
+
+*.swp
+*.swo
+*.swn
+.idea/
+.vscode/
+
+# --- Environment / secrets ----------------------------------------------------
+
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.*.example
+!.env.template
+!.env.*.template
+
+# --- Agent harnesses (local IDE + CLI agent config) ---------------------------
+
+.cursor/
+# …except shared project hooks (substrate turn re-engagement)
+!.cursor/hooks.json
+!.cursor/hooks/
+.claude/
+CLAUDE.local.md
+.codex/
+.aider*
+.continue/
+.windsurf/
+.opencode/
+.gemini/
+
+# --- Substrate ------------------------------------------------------------------
+
+# Space data (threads + registry) lives in .substrate/ at a project root.
+# Ignored by default: raw threads are lab chatter. To keep the lineage in
+# git, remove this line — or export clean transcripts instead:
+#   substrate read <thread> > docs/threads/<thread>.md
+.substrate/
+
+# Atomic-write temps if a process dies mid-rename (readers skip these anyway).
+.tmp-*
