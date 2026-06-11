@@ -1,4 +1,5 @@
 > **sub•strate** | ˈsəbˌstrāt |
+>
 > noun
 >
 > an underlying substance or layer.
