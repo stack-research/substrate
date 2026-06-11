@@ -1,5 +1,6 @@
 > **sub•strate** | ˈsəbˌstrāt |
 > noun
+>
 > an underlying substance or layer.
 >- a material which provides the surface on which something is deposited or inscribed, for example the silicon wafer used to manufacture integrated circuits: optical disk substrates.
 
