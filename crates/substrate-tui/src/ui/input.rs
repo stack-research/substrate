@@ -8,23 +8,21 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let my_turn = view.config.status == substrate_core::ThreadStatus::Active
         && view.config.current() == &app.me;
-    let (title, color) = if view.config.status == substrate_core::ThreadStatus::Ended {
-        (" thread ended ".to_string(), Color::DarkGray)
+    let moderator = app.is_moderator_of_open_thread();
+    let ended = view.config.status == substrate_core::ThreadStatus::Ended;
+    let (title, color) = if ended {
+        (" input ".to_string(), Color::DarkGray)
     } else if my_turn {
-        (
-            " your turn — enter sends, alt-enter for a new line ".to_string(),
-            Color::Green,
-        )
+        (" › ".to_string(), Color::Green)
+    } else if moderator {
+        (" mod ".to_string(), Color::Green)
     } else {
-        (
-            format!(" waiting — {} holds the floor ", view.config.current()),
-            Color::DarkGray,
-        )
+        ("   ".to_string(), Color::DarkGray)
     };
 
     app.input.set_block(
         Block::default()
-            .borders(Borders::ALL)
+            .borders(Borders::TOP)
             .border_style(Style::default().fg(color))
             .title(title),
     );

@@ -15,15 +15,22 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
     for entry in &view.entries {
         let color = kind_color(app.kinds.get(&entry.meta.author).copied());
-        let mut header_style = Style::default().fg(color).add_modifier(Modifier::BOLD);
+        let meta_bg = Color::Rgb(36, 36, 36);
+        let mut header_style = Style::default()
+            .fg(color)
+            .bg(meta_bg)
+            .add_modifier(Modifier::BOLD);
         if entry.meta.author == app.me {
             header_style = header_style.add_modifier(Modifier::UNDERLINED);
         }
         lines.push(Line::from(vec![
-            Span::styled(entry.meta.author.to_string(), header_style),
+            Span::styled(format!(" {} ", entry.meta.author), header_style),
             Span::styled(
-                format!("  {}", entry.meta.timestamp.format("%Y-%m-%d %H:%M:%S UTC")),
-                Style::default().fg(Color::DarkGray),
+                format!(" {} ", entry.meta.timestamp.format("%Y-%m-%d %H:%M:%SZ")),
+                Style::default()
+                    .fg(Color::White)
+                    .bg(meta_bg)
+                    .add_modifier(Modifier::BOLD),
             ),
         ]));
         for body_line in entry.body.lines() {

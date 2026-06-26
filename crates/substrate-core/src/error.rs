@@ -33,7 +33,7 @@ pub enum SubstrateError {
     #[error("the thread is still active — nothing to resume")]
     NotEnded,
 
-    #[error("only the moderator may do that, and only on the moderator's turn")]
+    #[error("only the moderator may do that")]
     NotModeratorsTurn,
 
     #[error("the moderator cannot be quieted")]

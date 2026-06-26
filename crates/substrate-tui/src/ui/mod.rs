@@ -21,11 +21,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 }
 
 fn render_thread(frame: &mut Frame, app: &mut App) {
+    let input_height = (app.input.lines().len() as u16 + 2).clamp(3, 8);
     let layout = Layout::vertical([
-        Constraint::Length(1), // header
-        Constraint::Min(1),    // transcript
-        Constraint::Length(5), // input
-        Constraint::Length(1), // status
+        Constraint::Length(1),            // header
+        Constraint::Min(1),               // transcript
+        Constraint::Length(input_height), // input
+        Constraint::Length(1),            // status
     ])
     .split(frame.area());
 

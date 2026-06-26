@@ -1,8 +1,6 @@
 use ratatui::prelude::*;
 
 use crate::app::App;
-use crate::commands;
-
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let Some(view) = &app.view else { return };
 
@@ -11,32 +9,29 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             format!(" {message}"),
             Style::default().fg(Color::Yellow),
         ))
+    } else if view.config.status == substrate_core::ThreadStatus::Ended {
+        Line::from(Span::styled(" ended", Style::default().fg(Color::DarkGray)))
+    } else if app.is_moderator_of_open_thread() && view.config.current() != &app.me {
+        Line::from(vec![
+            Span::styled(" moderator", Style::default().fg(Color::Green)),
+            Span::styled(
+                format!(" · current: {}", view.config.current()),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ])
     } else if app.is_moderator_of_open_thread() && view.config.is_paused() {
+        Line::from(vec![
+            Span::styled(" moderator", Style::default().fg(Color::Green)),
+            Span::styled(" · paused on you", Style::default().fg(Color::DarkGray)),
+        ])
+    } else if view.config.current() == &app.me {
         Line::from(Span::styled(
-            format!(" the room is paused for you · {}", commands::HELP),
+            " your turn",
             Style::default().fg(Color::Green),
         ))
     } else {
-        let order: Vec<String> = view
-            .config
-            .turn_order
-            .iter()
-            .map(|name| {
-                let mut label = name.to_string();
-                if name == &view.config.moderator {
-                    label.push('*');
-                }
-                if let Some(remaining) = view.config.quieted.get(name) {
-                    label.push_str(&format!("(quiet {remaining})"));
-                }
-                if name == view.config.current() {
-                    label = format!("[{label}]");
-                }
-                label
-            })
-            .collect();
         Line::from(Span::styled(
-            format!(" order: {} · esc back · /help", order.join(" → ")),
+            format!(" waiting for {} ", view.config.current()),
             Style::default().fg(Color::DarkGray),
         ))
     };

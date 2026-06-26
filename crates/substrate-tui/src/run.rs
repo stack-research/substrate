@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyEventKind},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -50,11 +52,13 @@ async fn run_app(root: PathBuf, name_flag: Option<Name>) -> Result<()> {
         }
     });
 
-    let (key_tx, mut key_rx) = mpsc::channel::<KeyEvent>(32);
-    let _input_task = spawn_input_task(key_tx);
+    let (event_tx, mut event_rx) = mpsc::channel::<Event>(32);
+    let _input_task = spawn_input_task(event_tx);
 
-    let result = match preflight(&mut terminal, &mut key_rx, &root, name_flag).await {
-        Ok(Some((space, me, note))) => main_loop(&mut terminal, &mut key_rx, space, me, note).await,
+    let result = match preflight(&mut terminal, &mut event_rx, &root, name_flag).await {
+        Ok(Some((space, me, note))) => {
+            main_loop(&mut terminal, &mut event_rx, space, me, note).await
+        }
         Ok(None) => Ok(()), // user declined the wizard or quit
         Err(e) => Err(e),
     };
@@ -66,7 +70,7 @@ async fn run_app(root: PathBuf, name_flag: Option<Name>) -> Result<()> {
 /// wizard, and figure out who is at the keyboard (asked once, ever).
 async fn preflight(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    key_rx: &mut mpsc::Receiver<KeyEvent>,
+    event_rx: &mut mpsc::Receiver<Event>,
     root: &Path,
     name_flag: Option<Name>,
 ) -> Result<Option<(Space, Name, Option<String>)>> {
@@ -76,7 +80,7 @@ async fn preflight(
         // wizard step 1: explicit consent — never create on a typo
         loop {
             terminal.draw(|f| ui::wizard::draw_confirm_create(f, root))?;
-            match key_rx.recv().await.map(|k| k.code) {
+            match recv_key(event_rx).await.map(|k| k.code) {
                 Some(KeyCode::Char('y') | KeyCode::Enter) => break,
                 Some(KeyCode::Char('n') | KeyCode::Char('q') | KeyCode::Esc) | None => {
                     return Ok(None)
@@ -87,7 +91,7 @@ async fn preflight(
         // wizard step 2: who are you (skipped when already known)
         let me = match known_me() {
             Some(me) => me,
-            None => match ask_name(terminal, key_rx).await? {
+            None => match ask_name(terminal, event_rx).await? {
                 Some(me) => me,
                 None => return Ok(None),
             },
@@ -116,7 +120,7 @@ async fn preflight(
             .collect();
         match humans.as_slice() {
             [only] => only.clone(),
-            _ => match ask_name(terminal, key_rx).await? {
+            _ => match ask_name(terminal, event_rx).await? {
                 Some(me) => me,
                 None => return Ok(None),
             },
@@ -136,13 +140,13 @@ async fn preflight(
 
 async fn ask_name(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    key_rx: &mut mpsc::Receiver<KeyEvent>,
+    event_rx: &mut mpsc::Receiver<Event>,
 ) -> Result<Option<Name>> {
     let mut input = tui_textarea::TextArea::default();
     let mut error: Option<String> = None;
     loop {
         terminal.draw(|f| ui::wizard::draw_ask_name(f, &input, error.as_deref()))?;
-        let Some(key) = key_rx.recv().await else {
+        let Some(key) = recv_key(event_rx).await else {
             return Ok(None);
         };
         match key.code {
@@ -160,7 +164,7 @@ async fn ask_name(
 
 async fn main_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    key_rx: &mut mpsc::Receiver<KeyEvent>,
+    event_rx: &mut mpsc::Receiver<Event>,
     space: Space,
     me: Name,
     note: Option<String>,
@@ -170,6 +174,7 @@ async fn main_loop(
     let mut tick = tokio::time::interval(Duration::from_millis(250));
 
     let mut app = App::new(space, me)?;
+    let mut mouse_capture = false;
     if let Some(note) = note {
         app.flash(note);
     }
@@ -178,11 +183,16 @@ async fn main_loop(
         terminal.draw(|f| ui::render(f, &mut app))?;
 
         tokio::select! {
-            key = key_rx.recv() => {
-                let Some(key) = key else {
+            event = event_rx.recv() => {
+                let Some(event) = event else {
                     break; // input thread exited: terminal is gone, so are we
                 };
-                match app.handle_key(key) {
+                let action = match event {
+                    Event::Key(key) => app.handle_key(key),
+                    Event::Mouse(mouse) => app.handle_mouse(mouse),
+                    _ => None,
+                };
+                match action {
                     Some(Action::Quit) => break,
                     Some(Action::Reload) => {
                         if let Err(e) = app.reload() {
@@ -190,6 +200,21 @@ async fn main_loop(
                         }
                     }
                     Some(Action::Submit(text)) => submit(&mut app, &text),
+                    Some(Action::ToggleMouseCapture) => {
+                        mouse_capture = !mouse_capture;
+                        let result = if mouse_capture {
+                            execute!(terminal.backend_mut(), EnableMouseCapture)
+                        } else {
+                            execute!(terminal.backend_mut(), DisableMouseCapture)
+                        };
+                        if let Err(e) = result {
+                            app.flash(e.to_string());
+                        } else if mouse_capture {
+                            app.flash("mouse wheel scrolling on; F2 turns it off for text selection");
+                        } else {
+                            app.flash("mouse wheel scrolling off; terminal text selection restored");
+                        }
+                    }
                     None => {}
                 }
             }
@@ -204,6 +229,15 @@ async fn main_loop(
         }
     }
     Ok(())
+}
+
+async fn recv_key(event_rx: &mut mpsc::Receiver<Event>) -> Option<KeyEvent> {
+    while let Some(event) = event_rx.recv().await {
+        if let Event::Key(key) = event {
+            return Some(key);
+        }
+    }
+    None
 }
 
 /// Execute a submitted input line: a slash command or a plain entry.
@@ -318,7 +352,7 @@ fn run_command(app: &App, thread: &Name, text: &str) -> anyhow::Result<String> {
     }
 }
 
-fn spawn_input_task(key_tx: mpsc::Sender<KeyEvent>) -> tokio::task::JoinHandle<()> {
+fn spawn_input_task(event_tx: mpsc::Sender<Event>) -> tokio::task::JoinHandle<()> {
     tokio::task::spawn_blocking(move || loop {
         // poll/read errors mean the terminal is gone (orphaned process,
         // dead pty). Exit, never swallow: an erroring poll stops blocking
@@ -327,7 +361,14 @@ fn spawn_input_task(key_tx: mpsc::Sender<KeyEvent>) -> tokio::task::JoinHandle<(
             Ok(true) => match event::read() {
                 Ok(Event::Key(key)) => {
                     // ignore key release events (Windows/kitty protocols)
-                    if key.kind == KeyEventKind::Press && key_tx.blocking_send(key).is_err() {
+                    if key.kind == KeyEventKind::Press
+                        && event_tx.blocking_send(Event::Key(key)).is_err()
+                    {
+                        break;
+                    }
+                }
+                Ok(Event::Mouse(mouse)) => {
+                    if event_tx.blocking_send(Event::Mouse(mouse)).is_err() {
                         break;
                     }
                 }
@@ -337,7 +378,7 @@ fn spawn_input_task(key_tx: mpsc::Sender<KeyEvent>) -> tokio::task::JoinHandle<(
             Ok(false) => {}
             Err(_) => break,
         }
-        if key_tx.is_closed() {
+        if event_tx.is_closed() {
             break;
         }
     })
@@ -352,13 +393,17 @@ fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
 
 fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
     Ok(())
 }
 
 fn restore_terminal_basic() -> Result<()> {
     disable_raw_mode()?;
-    execute!(io::stdout(), LeaveAlternateScreen)?;
+    execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen)?;
     Ok(())
 }

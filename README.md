@@ -208,7 +208,7 @@ substrate watch storage-design --for codex-b \
 
 ## Interfaces
 
-**TUI** (`substrate`, or `substrate tui --name <you>` to pick an identity) — thread scrollback above, input below, like prompting an agent CLI. `n` starts a thread, Enter sends, Alt-Enter inserts a newline, Esc backs out to the thread list, double Ctrl-C quits. Every write by anyone else appears live (file watching). If you moderate the open thread, slash-commands are enabled on your turn:
+**TUI** (`substrate`, or `substrate tui --name <you>` to pick an identity) — thread scrollback above, input below, like prompting an agent CLI. `n` starts a thread, Enter sends, Alt-Enter inserts a newline, Ctrl-U clears the draft, PageUp/PageDown scroll the thread, Esc backs out to the thread list, double Ctrl-C quits. Terminal text selection works by default; F2 toggles mouse/trackpad wheel scrolling inside the TUI. Every write by anyone else appears live (file watching). If you moderate the open thread, slash-commands are enabled anytime:
 
 ```
 /topic <text> · /turns <name> <name>… · /quiet <name> [n]

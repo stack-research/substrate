@@ -136,33 +136,30 @@ fn advance(config: &mut ThreadConfig) {
 
 // ---- Moderator operations ----------------------------------------------
 //
-// All legal only while the moderator holds the floor. They do not consume
-// the turn: the moderator chains adjustments during one pause and ends
-// their turn by writing an entry (or a "pass" no-op).
+// Callers gate these on the moderator role. They are legal while any
+// participant holds the floor, and they do not consume a turn.
 
-fn load_for_moderator(space: &Space, thread: &Name) -> Result<ThreadConfig> {
+fn load_active_thread(space: &Space, thread: &Name) -> Result<ThreadConfig> {
     let config = ThreadConfig::load(space, thread)?;
     if config.status == ThreadStatus::Ended {
         return Err(SubstrateError::Ended);
-    }
-    if config.current() != &config.moderator {
-        return Err(SubstrateError::NotModeratorsTurn);
     }
     Ok(config)
 }
 
 pub fn set_topic(space: &Space, thread: &Name, topic: &str) -> Result<()> {
-    let mut config = load_for_moderator(space, thread)?;
+    let mut config = load_active_thread(space, thread)?;
     config.topic = topic.to_string();
     config.save(space, thread)
 }
 
 /// Replace the speaking order. The moderator is force-prepended first; quiet
-/// counters for anyone no longer in the room are dropped. The floor stays
-/// with the moderator (index 0), so the new order takes effect when their
-/// turn ends.
+/// counters for anyone no longer in the room are dropped. If the current
+/// speaker remains in the new order, the floor stays with them; otherwise it
+/// returns to the moderator.
 pub fn reorder_turns(space: &Space, thread: &Name, new_order: &[Name]) -> Result<()> {
-    let mut config = load_for_moderator(space, thread)?;
+    let mut config = load_active_thread(space, thread)?;
+    let current = config.current().clone();
     let mut turn_order: Vec<Name> = vec![config.moderator.clone()];
     for name in new_order {
         space.participant(name.as_str())?;
@@ -174,14 +171,14 @@ pub fn reorder_turns(space: &Space, thread: &Name, new_order: &[Name]) -> Result
         return Err(SubstrateError::TooFewParticipants);
     }
     config.quieted.retain(|name, _| turn_order.contains(name));
-    config.next_index = 0;
+    config.next_index = turn_order.iter().position(|n| n == &current).unwrap_or(0);
     config.turn_order = turn_order;
     config.save(space, thread)
 }
 
 /// Quiet a participant for their next `turns` turns (skipped when reached).
 pub fn quiet(space: &Space, thread: &Name, name: &Name, turns: u32) -> Result<()> {
-    let mut config = load_for_moderator(space, thread)?;
+    let mut config = load_active_thread(space, thread)?;
     if name == &config.moderator {
         return Err(SubstrateError::CannotQuietModerator);
     }
@@ -201,10 +198,9 @@ pub fn unquiet(space: &Space, thread: &Name, name: &Name) -> Result<()> {
 }
 
 /// Add a registered participant to the room, appended at the end of the
-/// order so they speak last in the coming round. The floor stays with the
-/// moderator (index 0).
+/// order so they speak last in the coming round. The current floor stays put.
 pub fn invite(space: &Space, thread: &Name, name: &Name) -> Result<()> {
-    let mut config = load_for_moderator(space, thread)?;
+    let mut config = load_active_thread(space, thread)?;
     space.participant(name.as_str())?;
     if config.turn_order.contains(name) {
         return Ok(()); // already in the room
@@ -236,7 +232,7 @@ pub fn set_next(space: &Space, thread: &Name, name: &Name) -> Result<()> {
 /// End the thread. Entries stay on disk and readable forever; all writes
 /// are rejected from here on.
 pub fn end_thread(space: &Space, thread: &Name) -> Result<()> {
-    let mut config = load_for_moderator(space, thread)?;
+    let mut config = load_active_thread(space, thread)?;
     config.status = ThreadStatus::Ended;
     config.save(space, thread)
 }

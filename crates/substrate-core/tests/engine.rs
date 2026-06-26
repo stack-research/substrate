@@ -223,21 +223,47 @@ fn quiet_skips_and_expires() {
 }
 
 #[test]
-fn moderator_ops_only_on_their_turn_and_reorder_invite_end() {
+fn moderator_ops_work_anytime_and_reorder_invite_end() {
     let (_dir, space) = group_space();
     let conv = group_thread(&space);
 
     // user-name opens the room (their first entry is the instructions slot)
     turn::write_entry(&space, &conv, &n("user-name"), "ground rules: be brief").unwrap();
 
-    // now it's claude-a's turn — moderator ops are rejected
-    assert!(matches!(
-        turn::set_topic(&space, &conv, "new").unwrap_err(),
-        SubstrateError::NotModeratorsTurn
-    ));
+    // now it's claude-a's turn, but the moderator can still adjust the room
+    turn::set_topic(&space, &conv, "new").unwrap();
+    assert_eq!(
+        turn::turn_status(&space, &conv).unwrap().current,
+        n("claude-a")
+    );
+    turn::invite(&space, &conv, &n("gemini-c")).unwrap();
+    let config = ThreadConfig::load(&space, &conv).unwrap();
+    assert!(config.turn_order.contains(&n("gemini-c")));
+    assert_eq!(config.current(), &n("claude-a"));
 
-    // walk the round back to user-name
-    for speaker in ["claude-a", "pat", "codex-b", "gemini-c"] {
+    // reordering preserves the current speaker when they remain in the room
+    turn::reorder_turns(
+        &space,
+        &conv,
+        &[n("pat"), n("claude-a"), n("codex-b"), n("gemini-c")],
+    )
+    .unwrap();
+    let config = ThreadConfig::load(&space, &conv).unwrap();
+    assert_eq!(
+        config.turn_order,
+        vec![
+            n("user-name"),
+            n("pat"),
+            n("claude-a"),
+            n("codex-b"),
+            n("gemini-c")
+        ]
+    );
+    assert_eq!(config.current(), &n("claude-a"));
+
+    // walk the current round back to user-name. Pat moved before the current
+    // speaker, so they wait until the next round.
+    for speaker in ["claude-a", "codex-b", "gemini-c"] {
         turn::write_entry(&space, &conv, &n(speaker), "hi").unwrap();
     }
 

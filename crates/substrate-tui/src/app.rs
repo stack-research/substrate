@@ -4,13 +4,14 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use substrate_core::{
     thread::ThreadConfig, transcript, turn::TurnStatus, Entry, Name, ParticipantKind, Space,
 };
 use tui_textarea::TextArea;
 
 const CTRL_C_WINDOW_MS: u128 = 1500;
+const WHEEL_SCROLL_LINES: usize = 3;
 pub const FLASH_SECS: u64 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +67,7 @@ pub enum Action {
     Quit,
     Reload,
     Submit(String),
+    ToggleMouseCapture,
 }
 
 pub struct ThreadView {
@@ -191,6 +193,36 @@ impl App {
         text
     }
 
+    fn clear_input(&mut self) {
+        self.input = TextArea::default();
+    }
+
+    fn scroll_up(&mut self, lines: usize) {
+        if let Some(view) = &mut self.view {
+            view.scroll = view.scroll.saturating_sub(lines.max(1));
+            view.stick_bottom = false;
+        }
+    }
+
+    fn scroll_down(&mut self, lines: usize) {
+        if let Some(view) = &mut self.view {
+            view.scroll += lines.max(1);
+        }
+    }
+
+    fn scroll_top(&mut self) {
+        if let Some(view) = &mut self.view {
+            view.scroll = 0;
+            view.stick_bottom = false;
+        }
+    }
+
+    fn scroll_bottom(&mut self) {
+        if let Some(view) = &mut self.view {
+            view.stick_bottom = true;
+        }
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<Action> {
         // double Ctrl-C quits from anywhere
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -310,7 +342,16 @@ impl App {
                 self.close_view();
                 None
             }
-            KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
+            KeyCode::F(2) => Some(Action::ToggleMouseCapture),
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.clear_input();
+                None
+            }
+            KeyCode::Enter
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT) =>
+            {
                 self.input.insert_newline();
                 None
             }
@@ -323,23 +364,28 @@ impl App {
                 }
             }
             KeyCode::PageUp => {
-                if let Some(view) = &mut self.view {
-                    view.scroll = view.scroll.saturating_sub(self.viewport_height.max(1) / 2);
-                    view.stick_bottom = false;
-                }
+                self.scroll_up((self.viewport_height.max(1) / 2).max(1));
+                None
+            }
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.scroll_up(1);
                 None
             }
             KeyCode::PageDown => {
-                if let Some(view) = &mut self.view {
-                    // render clamps; hitting the bottom re-sticks
-                    view.scroll += self.viewport_height.max(1) / 2;
-                }
+                // render clamps; hitting the bottom re-sticks
+                self.scroll_down((self.viewport_height.max(1) / 2).max(1));
+                None
+            }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.scroll_down(1);
+                None
+            }
+            KeyCode::Home if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.scroll_top();
                 None
             }
             KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if let Some(view) = &mut self.view {
-                    view.stick_bottom = true;
-                }
+                self.scroll_bottom();
                 None
             }
             _ => {
@@ -347,6 +393,18 @@ impl App {
                 None
             }
         }
+    }
+
+    pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
+        if self.mode != Mode::Thread {
+            return None;
+        }
+        match mouse.kind {
+            MouseEventKind::ScrollUp => self.scroll_up(WHEEL_SCROLL_LINES),
+            MouseEventKind::ScrollDown => self.scroll_down(WHEEL_SCROLL_LINES),
+            _ => {}
+        }
+        None
     }
 
     pub fn is_moderator_of_open_thread(&self) -> bool {
@@ -421,6 +479,79 @@ mod tests {
 
         let action = app.handle_key(key(KeyCode::Enter));
         assert!(action.is_none(), "empty input should not submit");
+    }
+
+    #[test]
+    fn multiline_input_and_ctrl_u_clear() {
+        let (_dir, mut app) = test_app();
+        app.handle_key(key(KeyCode::Enter)); // open
+
+        for c in "hello".chars() {
+            app.handle_key(key(KeyCode::Char(c)));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+        for c in "world".chars() {
+            app.handle_key(key(KeyCode::Char(c)));
+        }
+        let action = app.handle_key(key(KeyCode::Enter));
+        assert!(matches!(action, Some(Action::Submit(t)) if t == "hello\nworld"));
+
+        for c in "draft".chars() {
+            app.handle_key(key(KeyCode::Char(c)));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert_eq!(app.input.lines().join(""), "");
+    }
+
+    #[test]
+    fn thread_scroll_keys_move_the_view() {
+        let (_dir, mut app) = test_app();
+        app.handle_key(key(KeyCode::Enter)); // open
+        app.viewport_height = 10;
+
+        app.handle_key(key(KeyCode::PageDown));
+        assert_eq!(app.view.as_ref().unwrap().scroll, 5);
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL));
+        assert_eq!(app.view.as_ref().unwrap().scroll, 4);
+        assert!(!app.view.as_ref().unwrap().stick_bottom);
+        app.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL));
+        assert_eq!(app.view.as_ref().unwrap().scroll, 0);
+        app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL));
+        assert!(app.view.as_ref().unwrap().stick_bottom);
+    }
+
+    #[test]
+    fn mouse_wheel_scrolls_thread_view() {
+        let (_dir, mut app) = test_app();
+        app.handle_key(key(KeyCode::Enter)); // open
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.view.as_ref().unwrap().scroll, WHEEL_SCROLL_LINES);
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.view.as_ref().unwrap().scroll, 0);
+        assert!(!app.view.as_ref().unwrap().stick_bottom);
+    }
+
+    #[test]
+    fn f2_toggles_mouse_capture_mode() {
+        let (_dir, mut app) = test_app();
+        app.handle_key(key(KeyCode::Enter)); // open
+
+        assert!(matches!(
+            app.handle_key(key(KeyCode::F(2))),
+            Some(Action::ToggleMouseCapture)
+        ));
     }
 
     #[test]
