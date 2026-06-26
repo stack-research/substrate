@@ -7,7 +7,7 @@ use rmcp::{tool, tool_handler, tool_router, ErrorData, ServerHandler};
 use serde::Deserialize;
 use substrate_core::{
     transcript::{self, Window},
-    turn, Name, Space, SubstrateError,
+    turn, Name, ParticipantKind, Space, SubstrateError,
 };
 
 use crate::spaces::{SpaceSet, SpaceSource};
@@ -143,6 +143,31 @@ impl SubstrateServer {
         ));
         Ok(out)
     }
+
+    /// Moderator gate: floor-ops are allowed only when THIS server's fixed
+    /// identity is the thread's moderator. Returns the rejection to send back
+    /// when it isn't — a domain error the model should read and act on.
+    fn require_moderator(&self, space: &Space, thread: &Name) -> Result<(), CallToolResult> {
+        match turn::turn_status(space, thread) {
+            Ok(status) if status.moderator == self.me => Ok(()),
+            Ok(status) => Err(CallToolResult::error(vec![Content::text(format!(
+                "only the moderator may do that — {moderator} moderates '{thread}', not you \
+                 ({me}). You can still take part on your turn with write_entry.",
+                moderator = status.moderator,
+                me = self.me,
+            ))])),
+            Err(e) => Err(Self::domain_error(e)),
+        }
+    }
+
+    /// A moderator op succeeded: confirm what changed, then show the fresh
+    /// floor state so the moderator sees the room as it now stands.
+    fn moderator_ok(&self, space: &Space, thread: &Name, confirmation: &str) -> CallToolResult {
+        let status = self
+            .status_text(space, thread)
+            .unwrap_or_else(|e| e.to_string());
+        CallToolResult::success(vec![Content::text(format!("{confirmation}\n\n{status}"))])
+    }
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -195,6 +220,53 @@ pub struct WaitParams {
     pub timeout_secs: Option<u64>,
 }
 
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct ModNameParams {
+    /// Space label (required only when several spaces are configured).
+    #[serde(default)]
+    pub space: Option<String>,
+    /// Thread name, as shown by list_threads.
+    pub thread: String,
+    /// The participant to act on.
+    pub name: String,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct ModQuietParams {
+    /// Space label (required only when several spaces are configured).
+    #[serde(default)]
+    pub space: Option<String>,
+    /// Thread name, as shown by list_threads.
+    pub thread: String,
+    /// The participant to quiet.
+    pub name: String,
+    /// Number of their upcoming turns to skip. 0 lifts an existing quiet.
+    pub turns: u32,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct ModOrderParams {
+    /// Space label (required only when several spaces are configured).
+    #[serde(default)]
+    pub space: Option<String>,
+    /// Thread name, as shown by list_threads.
+    pub thread: String,
+    /// The new speaking order. You (the moderator) are always placed first, so
+    /// you need not list yourself; anyone omitted leaves the room.
+    pub order: Vec<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct ModTopicParams {
+    /// Space label (required only when several spaces are configured).
+    #[serde(default)]
+    pub space: Option<String>,
+    /// Thread name, as shown by list_threads.
+    pub thread: String,
+    /// The new topic line.
+    pub topic: String,
+}
+
 #[tool_router]
 impl SubstrateServer {
     #[tool(
@@ -239,7 +311,15 @@ impl SubstrateServer {
              - With several spaces configured, pass `space` (the label) alongside \
              `thread` to every tool.\n\
              - Every status response ends with a '→ your move / not your turn' line \
-             — trust it over memory.",
+             — trust it over memory.\n\
+             \n\
+             ## If you moderate a thread\n\
+             You also hold floor-control tools, usable while anyone has the floor \
+             (they never cost a turn): set_next (hand the floor to a named \
+             participant), invite (add someone — an unknown name is registered as a \
+             new agent), quiet (turns = 0 lifts it), reorder_turns, set_topic, \
+             end_thread, and resume_thread. Non-moderators are refused, with the \
+             moderator named; only the thread's moderator may use them.",
             me = self.me,
         ))]))
     }
@@ -426,6 +506,177 @@ impl SubstrateServer {
                 _ = rx.recv() => {}
                 _ = tokio::time::sleep(wait) => {}
             }
+        }
+    }
+
+    // ---- Moderator floor-ops (role-gated) ------------------------------
+    //
+    // The same operations the TUI moderator has, exposed so moderation can
+    // pass to an agent. Each is gated to the thread's moderator; a non-
+    // moderator is refused with the role named. They never consume a turn.
+
+    #[tool(
+        description = "Moderator only. Hand the floor directly to a named participant — the conductor's baton. Works at any time, even mid-round; if that participant was quieted, the quiet is cleared. This is how an agent-moderator runs turn-taking."
+    )]
+    fn set_next(
+        &self,
+        Parameters(p): Parameters<ModNameParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let set = self.load()?;
+        let space = Self::resolve(&set, p.space.as_deref())?;
+        let thread = parse_name(&p.thread)?;
+        let name = parse_name(&p.name)?;
+        if let Err(reject) = self.require_moderator(space, &thread) {
+            return Ok(reject);
+        }
+        match turn::set_next(space, &thread, &name) {
+            Ok(()) => Ok(self.moderator_ok(space, &thread, &format!("the floor passes to {name}"))),
+            Err(e) => Ok(Self::domain_error(e)),
+        }
+    }
+
+    #[tool(
+        description = "Moderator only. Add a participant to the room, appended last in the speaking order (the current floor stays put). An unfamiliar name is registered as a new agent — naming someone is the invitation, the same policy as opening a thread."
+    )]
+    fn invite(&self, Parameters(p): Parameters<ModNameParams>) -> Result<CallToolResult, ErrorData> {
+        let set = self.load()?;
+        let space = Self::resolve(&set, p.space.as_deref())?;
+        let thread = parse_name(&p.thread)?;
+        let name = parse_name(&p.name)?;
+        if let Err(reject) = self.require_moderator(space, &thread) {
+            return Ok(reject);
+        }
+        // mirror the TUI: the moderator naming someone IS the registration
+        let registered = if space.participant(name.as_str()).is_err() {
+            if let Err(e) = space.add_participant(name.clone(), ParticipantKind::Agent) {
+                return Ok(Self::domain_error(e));
+            }
+            " (registered as a new agent)"
+        } else {
+            ""
+        };
+        match turn::invite(space, &thread, &name) {
+            Ok(()) => Ok(self.moderator_ok(
+                space,
+                &thread,
+                &format!("{name} joins the thread at the end of the round{registered}"),
+            )),
+            Err(e) => Ok(Self::domain_error(e)),
+        }
+    }
+
+    #[tool(
+        description = "Moderator only. Quiet a participant for their next `turns` turns — they are skipped when reached. Pass turns = 0 to lift an existing quiet. The moderator cannot be quieted."
+    )]
+    fn quiet(&self, Parameters(p): Parameters<ModQuietParams>) -> Result<CallToolResult, ErrorData> {
+        let set = self.load()?;
+        let space = Self::resolve(&set, p.space.as_deref())?;
+        let thread = parse_name(&p.thread)?;
+        let name = parse_name(&p.name)?;
+        if let Err(reject) = self.require_moderator(space, &thread) {
+            return Ok(reject);
+        }
+        match turn::quiet(space, &thread, &name, p.turns) {
+            Ok(()) => {
+                let confirmation = if p.turns == 0 {
+                    format!("{name} may speak again")
+                } else {
+                    format!("{name} quieted for {} turn(s)", p.turns)
+                };
+                Ok(self.moderator_ok(space, &thread, &confirmation))
+            }
+            Err(e) => Ok(Self::domain_error(e)),
+        }
+    }
+
+    #[tool(
+        description = "Moderator only. Replace the speaking order with the given participants. You are always placed first; anyone omitted leaves the room (losing any quiet). If the current speaker remains, the floor stays with them, otherwise it returns to you."
+    )]
+    fn reorder_turns(
+        &self,
+        Parameters(p): Parameters<ModOrderParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let set = self.load()?;
+        let space = Self::resolve(&set, p.space.as_deref())?;
+        let thread = parse_name(&p.thread)?;
+        if let Err(reject) = self.require_moderator(space, &thread) {
+            return Ok(reject);
+        }
+        let order: Vec<Name> = match p
+            .order
+            .iter()
+            .map(|n| Name::new(n))
+            .collect::<substrate_core::Result<Vec<Name>>>()
+        {
+            Ok(v) => v,
+            Err(e) => return Ok(Self::domain_error(e)),
+        };
+        match turn::reorder_turns(space, &thread, &order) {
+            Ok(()) => Ok(self.moderator_ok(
+                space,
+                &thread,
+                &format!("turn order set: {}", p.order.join(" → ")),
+            )),
+            Err(e) => Ok(Self::domain_error(e)),
+        }
+    }
+
+    #[tool(description = "Moderator only. Change the thread's topic line.")]
+    fn set_topic(
+        &self,
+        Parameters(p): Parameters<ModTopicParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let set = self.load()?;
+        let space = Self::resolve(&set, p.space.as_deref())?;
+        let thread = parse_name(&p.thread)?;
+        if let Err(reject) = self.require_moderator(space, &thread) {
+            return Ok(reject);
+        }
+        match turn::set_topic(space, &thread, &p.topic) {
+            Ok(()) => Ok(self.moderator_ok(space, &thread, &format!("topic set: {}", p.topic))),
+            Err(e) => Ok(Self::domain_error(e)),
+        }
+    }
+
+    #[tool(
+        description = "Moderator only. End the thread: every entry stays readable forever, but all further writes are rejected. Reversible with resume_thread."
+    )]
+    fn end_thread(
+        &self,
+        Parameters(p): Parameters<ThreadParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let set = self.load()?;
+        let space = Self::resolve(&set, p.space.as_deref())?;
+        let thread = parse_name(&p.thread)?;
+        if let Err(reject) = self.require_moderator(space, &thread) {
+            return Ok(reject);
+        }
+        match turn::end_thread(space, &thread) {
+            Ok(()) => Ok(self.moderator_ok(space, &thread, "thread ended")),
+            Err(e) => Ok(Self::domain_error(e)),
+        }
+    }
+
+    #[tool(
+        description = "Moderator only. Reopen an ended thread; the floor returns to you so your next entry can say why the room is back."
+    )]
+    fn resume_thread(
+        &self,
+        Parameters(p): Parameters<ThreadParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let set = self.load()?;
+        let space = Self::resolve(&set, p.space.as_deref())?;
+        let thread = parse_name(&p.thread)?;
+        if let Err(reject) = self.require_moderator(space, &thread) {
+            return Ok(reject);
+        }
+        match turn::resume_thread(space, &thread) {
+            Ok(()) => Ok(self.moderator_ok(
+                space,
+                &thread,
+                "thread resumed — the floor is yours; say why the thread is back",
+            )),
+            Err(e) => Ok(Self::domain_error(e)),
         }
     }
 }

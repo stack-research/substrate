@@ -76,7 +76,7 @@ async fn two_agents_converse_through_the_protocol() {
     let a = connect(&dir, "claude-a").await;
     let b = connect(&dir, "codex-b").await;
 
-    // five tools advertised
+    // all tools advertised — six participant tools plus the moderator floor-ops
     let tools = a.list_all_tools().await.unwrap();
     let mut names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
     names.sort();
@@ -85,8 +85,15 @@ async fn two_agents_converse_through_the_protocol() {
         [
             "about",
             "check_turn",
+            "end_thread",
+            "invite",
             "list_threads",
+            "quiet",
             "read_thread",
+            "reorder_turns",
+            "resume_thread",
+            "set_next",
+            "set_topic",
             "wait_for_turn",
             "write_entry"
         ]
@@ -327,4 +334,121 @@ async fn one_server_many_spaces() {
     );
 
     client.cancel().await.unwrap();
+}
+
+/// A space whose thread is moderated by an AGENT (claude-a), so an MCP server
+/// running as that agent can exercise the moderator floor-ops.
+fn set_up_agent_moderated() -> (TempDir, Space) {
+    let dir = TempDir::new().unwrap();
+    let space = Space::init(dir.path()).unwrap();
+    for name in ["claude-a", "codex-b"] {
+        space
+            .add_participant(Name::new(name).unwrap(), ParticipantKind::Agent)
+            .unwrap();
+    }
+    thread::create_thread(
+        &space,
+        &Name::new("modtest").unwrap(),
+        "agent-moderated",
+        &Name::new("claude-a").unwrap(),
+        &[Name::new("codex-b").unwrap()],
+    )
+    .unwrap();
+    (dir, space)
+}
+
+/// Moderator floor-ops are exposed over MCP but gated to the thread's
+/// moderator: a non-moderator is refused (with the role named), and the
+/// moderator can drive the whole set — including inviting a brand-new name.
+#[tokio::test]
+async fn moderator_ops_are_role_gated() {
+    let (dir, space) = set_up_agent_moderated();
+    let thread = Name::new("modtest").unwrap();
+    let moderator = connect(&dir, "claude-a").await; // moderates the thread
+    let member = connect(&dir, "codex-b").await; // an ordinary participant
+
+    // a non-moderator is refused, and told who holds the role
+    let (text, err) = call(
+        &member,
+        "set_next",
+        serde_json::json!({"thread": "modtest", "name": "codex-b"}),
+    )
+    .await;
+    assert!(err, "{text}");
+    assert!(text.contains("claude-a"), "{text}");
+
+    // the moderator invites a brand-new name → registered as an agent, joins last
+    let (text, err) = call(
+        &moderator,
+        "invite",
+        serde_json::json!({"thread": "modtest", "name": "hermes-x"}),
+    )
+    .await;
+    assert!(!err, "{text}");
+    assert!(text.contains("registered as a new agent"), "{text}");
+    assert!(text.contains("hermes-x"), "{text}");
+
+    // set the topic and the speaking order
+    let (text, err) = call(
+        &moderator,
+        "set_topic",
+        serde_json::json!({"thread": "modtest", "topic": "agent-run room"}),
+    )
+    .await;
+    assert!(!err, "{text}");
+    assert!(text.contains("agent-run room"), "{text}");
+
+    let (text, err) = call(
+        &moderator,
+        "reorder_turns",
+        serde_json::json!({"thread": "modtest", "order": ["codex-b", "hermes-x"]}),
+    )
+    .await;
+    assert!(!err, "{text}");
+
+    // hand the floor to codex-b, then quiet them
+    let (text, err) = call(
+        &moderator,
+        "set_next",
+        serde_json::json!({"thread": "modtest", "name": "codex-b"}),
+    )
+    .await;
+    assert!(!err, "{text}");
+    assert!(text.contains("current turn: codex-b"), "{text}");
+
+    let (text, err) = call(
+        &moderator,
+        "quiet",
+        serde_json::json!({"thread": "modtest", "name": "codex-b", "turns": 2}),
+    )
+    .await;
+    assert!(!err, "{text}");
+    assert!(text.contains("quieted for 2"), "{text}");
+
+    // end then resume — reversible; the floor returns to the moderator
+    let (text, err) = call(
+        &moderator,
+        "end_thread",
+        serde_json::json!({"thread": "modtest"}),
+    )
+    .await;
+    assert!(!err, "{text}");
+    assert!(text.contains("Ended"), "{text}");
+
+    let (text, err) = call(
+        &moderator,
+        "resume_thread",
+        serde_json::json!({"thread": "modtest"}),
+    )
+    .await;
+    assert!(!err, "{text}");
+    assert!(text.contains("the floor is yours"), "{text}");
+
+    // the engine on disk reflects the moderator's edits
+    let status = turn::turn_status(&space, &thread).unwrap();
+    assert!(status.turn_order.iter().any(|n| n.as_str() == "hermes-x"));
+    assert_eq!(status.moderator.as_str(), "claude-a");
+
+    moderator.cancel().await.unwrap();
+    member.cancel().await.unwrap();
 }
