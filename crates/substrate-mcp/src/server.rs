@@ -6,6 +6,7 @@ use rmcp::model::{CallToolResult, Content, Implementation, ServerCapabilities, S
 use rmcp::{tool, tool_handler, tool_router, ErrorData, ServerHandler};
 use serde::Deserialize;
 use substrate_core::{
+    thread,
     transcript::{self, Window},
     turn, Name, ParticipantKind, Space, SubstrateError,
 };
@@ -17,6 +18,22 @@ use crate::spaces::{SpaceSet, SpaceSource};
 const WAIT_FALLBACK_INTERVAL: Duration = Duration::from_secs(15);
 const WAIT_DEFAULT_SECS: u64 = 120;
 const WAIT_MAX_SECS: u64 = 600;
+const TOOL_NAMES: &[&str] = &[
+    "about",
+    "check_turn",
+    "end_thread",
+    "invite",
+    "list_threads",
+    "new_thread",
+    "quiet",
+    "read_thread",
+    "reorder_turns",
+    "resume_thread",
+    "set_next",
+    "set_topic",
+    "wait_for_turn",
+    "write_entry",
+];
 
 #[derive(Clone)]
 pub struct SubstrateServer {
@@ -221,6 +238,24 @@ pub struct WaitParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+pub struct NewThreadParams {
+    /// Space label (required only when several spaces are configured).
+    #[serde(default)]
+    pub space: Option<String>,
+    /// Thread name to create.
+    #[serde(alias = "thread")]
+    pub name: String,
+    /// Topic line for the new thread.
+    pub topic: String,
+    /// Registered participant who moderates the thread.
+    pub moderator: String,
+    /// Speaking order for non-moderator participants. If the moderator is listed,
+    /// substrate-core removes the duplicate and still opens on the moderator.
+    #[serde(alias = "participants", alias = "turns", alias = "order")]
+    pub turn_order: Vec<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct ModNameParams {
     /// Space label (required only when several spaces are configured).
     #[serde(default)]
@@ -277,8 +312,12 @@ impl SubstrateServer {
             Ok(set) if !set.is_empty() => set.labels().join(", "),
             _ => "(none yet — a moderator creates one with `substrate init`)".to_string(),
         };
+        let tools = TOOL_NAMES.join(", ");
         Ok(CallToolResult::success(vec![Content::text(format!(
             "# substrate — a shared chalkboard\n\
+             \n\
+             server version: {version}\n\
+             advertised tools: {tools}\n\
              \n\
              Local-first, turn-based group conversations between humans, agents, and \
              anything else. Everyone in a thread is a peer; every entry is markdown, \
@@ -321,7 +360,75 @@ impl SubstrateServer {
              end_thread, and resume_thread. Non-moderators are refused, with the \
              moderator named; only the thread's moderator may use them.",
             me = self.me,
+            version = env!("CARGO_PKG_VERSION"),
+            tools = tools,
         ))]))
+    }
+
+    #[tool(
+        description = "Create a new thread in a space. Any registered participant of the space may create one; the named moderator and turn_order members must already be registered. The opening floor is returned."
+    )]
+    fn new_thread(
+        &self,
+        Parameters(p): Parameters<NewThreadParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let set = self.load()?;
+        let space = Self::resolve(&set, p.space.as_deref())?;
+        // Thread creation is space-level: any registered participant can open a
+        // room. Unregistered MCP identities cannot write space config, while
+        // substrate-core still owns the config schema, participant validation,
+        // and moderator-first opening floor invariant.
+        if let Err(e) = space.participant(self.me.as_str()) {
+            return Ok(match e {
+                SubstrateError::UnknownParticipant(_) => {
+                    CallToolResult::error(vec![Content::text(format!(
+                        "only registered participants may create threads in this space — \
+                         this server is '{me}', which is not registered here. Ask a \
+                         moderator to add you first.",
+                        me = self.me
+                    ))])
+                }
+                e => Self::domain_error(e),
+            });
+        }
+
+        let thread_name = parse_name(&p.name)?;
+        let moderator = parse_name(&p.moderator)?;
+        let turn_order = p
+            .turn_order
+            .iter()
+            .map(|name| Name::new(name.trim()))
+            .collect::<substrate_core::Result<Vec<_>>>()
+            .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+
+        match thread::create_thread(space, &thread_name, &p.topic, &moderator, &turn_order) {
+            Ok(config) => {
+                let order: Vec<String> = config
+                    .turn_order
+                    .iter()
+                    .map(|name| {
+                        if name == &config.moderator {
+                            format!("{name} (moderator)")
+                        } else {
+                            name.to_string()
+                        }
+                    })
+                    .collect();
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "created thread: {thread}\n\
+                     topic: {topic}\n\
+                     opening floor: {current}\n\
+                     paused on moderator: {paused}\n\
+                     turn order: {order}",
+                    thread = thread_name,
+                    topic = config.topic,
+                    current = config.current(),
+                    paused = if config.is_paused() { "yes" } else { "no" },
+                    order = order.join(" → "),
+                ))]))
+            }
+            Err(e) => Ok(Self::domain_error(e)),
+        }
     }
 
     #[tool(
@@ -538,7 +645,10 @@ impl SubstrateServer {
     #[tool(
         description = "Moderator only. Add a participant to the room, appended last in the speaking order (the current floor stays put). An unfamiliar name is registered as a new agent — naming someone is the invitation, the same policy as opening a thread."
     )]
-    fn invite(&self, Parameters(p): Parameters<ModNameParams>) -> Result<CallToolResult, ErrorData> {
+    fn invite(
+        &self,
+        Parameters(p): Parameters<ModNameParams>,
+    ) -> Result<CallToolResult, ErrorData> {
         let set = self.load()?;
         let space = Self::resolve(&set, p.space.as_deref())?;
         let thread = parse_name(&p.thread)?;
@@ -568,7 +678,10 @@ impl SubstrateServer {
     #[tool(
         description = "Moderator only. Quiet a participant for their next `turns` turns — they are skipped when reached. Pass turns = 0 to lift an existing quiet. The moderator cannot be quieted."
     )]
-    fn quiet(&self, Parameters(p): Parameters<ModQuietParams>) -> Result<CallToolResult, ErrorData> {
+    fn quiet(
+        &self,
+        Parameters(p): Parameters<ModQuietParams>,
+    ) -> Result<CallToolResult, ErrorData> {
         let set = self.load()?;
         let space = Self::resolve(&set, p.space.as_deref())?;
         let thread = parse_name(&p.thread)?;

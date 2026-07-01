@@ -88,6 +88,7 @@ async fn two_agents_converse_through_the_protocol() {
             "end_thread",
             "invite",
             "list_threads",
+            "new_thread",
             "quiet",
             "read_thread",
             "reorder_turns",
@@ -104,6 +105,13 @@ async fn two_agents_converse_through_the_protocol() {
     let (text, err) = call(&a, "about", serde_json::json!({})).await;
     assert!(!err);
     assert!(text.contains("TIMEOUT MEANS STILL WAITING"), "{text}");
+    assert!(
+        text.contains(&format!("server version: {}", env!("CARGO_PKG_VERSION"))),
+        "{text}"
+    );
+    for tool in names {
+        assert!(text.contains(tool), "about output missing {tool}: {text}");
+    }
     // thread just opened: user-name (moderator-first) holds the floor, so claude-a
     // gets the not-your-turn affordance
     let (text, _) = call(&a, "check_turn", serde_json::json!({"thread": "lab"})).await;
@@ -201,6 +209,75 @@ async fn two_agents_converse_through_the_protocol() {
 
     a.cancel().await.unwrap();
     b.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn new_thread_creates_via_core_and_opens_on_moderator() {
+    let (dir, space) = set_up_space();
+    let creator = connect(&dir, "claude-a").await;
+
+    let (text, err) = call(
+        &creator,
+        "new_thread",
+        serde_json::json!({
+            "name": "fresh-lab",
+            "topic": "mcp-created room",
+            "moderator": "user-name",
+            "turn_order": ["claude-a", "user-name", "codex-b"]
+        }),
+    )
+    .await;
+    assert!(!err, "{text}");
+    assert!(text.contains("created thread: fresh-lab"), "{text}");
+    assert!(text.contains("opening floor: user-name"), "{text}");
+    assert!(text.contains("paused on moderator: yes"), "{text}");
+    assert!(
+        text.contains("turn order: user-name (moderator) → claude-a → codex-b"),
+        "{text}"
+    );
+
+    let thread = Name::new("fresh-lab").unwrap();
+    let status = turn::turn_status(&space, &thread).unwrap();
+    let order: Vec<&str> = status.turn_order.iter().map(Name::as_str).collect();
+    assert_eq!(order, ["user-name", "claude-a", "codex-b"]);
+    assert_eq!(status.current.as_str(), "user-name");
+    assert!(status.paused);
+
+    // Turn enforcement is immediate on the created thread: the creator is
+    // registered and in the room, but cannot write before the moderator opens.
+    let (text, err) = call(
+        &creator,
+        "write_entry",
+        serde_json::json!({"thread": "fresh-lab", "content": "too early"}),
+    )
+    .await;
+    assert!(err, "{text}");
+    assert!(text.contains("user-name"), "{text}");
+
+    creator.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn new_thread_requires_registered_creator() {
+    let (dir, space) = set_up_space();
+    let stranger = connect(&dir, "stranger").await;
+
+    let (text, err) = call(
+        &stranger,
+        "new_thread",
+        serde_json::json!({
+            "name": "rogue-room",
+            "topic": "should not exist",
+            "moderator": "user-name",
+            "turn_order": ["claude-a"]
+        }),
+    )
+    .await;
+    assert!(err, "{text}");
+    assert!(text.contains("only registered participants"), "{text}");
+    assert!(turn::turn_status(&space, &Name::new("rogue-room").unwrap()).is_err());
+
+    stranger.cancel().await.unwrap();
 }
 
 /// One server, many spaces: a registry file maps labels to roots, tools take
