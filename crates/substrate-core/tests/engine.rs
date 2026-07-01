@@ -97,6 +97,48 @@ fn create_thread_validates() {
 }
 
 #[test]
+fn slash_names_roundtrip_through_safe_path_components() {
+    let dir = TempDir::new().unwrap();
+    let space = Space::init(dir.path()).unwrap();
+    let moderator = n("user-name");
+    let agent = n("claude/opus-4.8");
+    let conv = n("harness/model-version");
+    space
+        .add_participant(moderator.clone(), ParticipantKind::Human)
+        .unwrap();
+    space
+        .add_participant(agent.clone(), ParticipantKind::Agent)
+        .unwrap();
+
+    thread::create_thread(
+        &space,
+        &conv,
+        "slash names",
+        &moderator,
+        std::slice::from_ref(&agent),
+    )
+    .unwrap();
+
+    let threads_root = dir.path().join(".substrate/threads");
+    let thread_dir = space.thread_dir(&conv);
+    let leaf = thread_dir.file_name().and_then(|s| s.to_str()).unwrap();
+    assert_eq!(thread_dir.parent().unwrap(), threads_root.as_path());
+    assert_eq!(leaf, "harness%2Fmodel-version");
+    assert!(!leaf.contains('/'));
+    assert!(thread_dir.join("config.yaml").is_file());
+    assert!(!threads_root.join("harness").exists());
+    assert_eq!(space.list_threads().unwrap(), vec![conv.clone()]);
+
+    turn::write_entry(&space, &conv, &moderator, "opening").unwrap();
+    let written = turn::write_entry(&space, &conv, &agent, "hello").unwrap();
+    assert!(written.filename.contains("claude%2Fopus-4.8"));
+    assert!(!written.filename.contains('/'));
+
+    let entries = transcript::load_entries(&space, &conv).unwrap();
+    assert_eq!(entries[1].meta.author, agent);
+}
+
+#[test]
 fn full_rounds_cycle_through_the_whole_group() {
     let (_dir, space) = group_space();
     let conv = group_thread(&space);

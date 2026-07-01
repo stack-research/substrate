@@ -147,7 +147,7 @@ impl Space {
     }
 
     pub fn thread_dir(&self, thread: &Name) -> PathBuf {
-        self.root.join(THREADS_DIR).join(thread.as_str())
+        self.root.join(THREADS_DIR).join(thread.to_path_component())
     }
 
     /// All threads in the space: directories under `.substrate/threads/`
@@ -166,7 +166,7 @@ impl Space {
             if let Some(name) = dir_entry
                 .file_name()
                 .to_str()
-                .and_then(|s| Name::new(s).ok())
+                .and_then(|s| Name::from_path_component(s).ok())
             {
                 found.push(name);
             }

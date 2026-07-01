@@ -43,6 +43,7 @@ pub fn parse_timestamp(s: &str) -> Option<DateTime<Utc>> {
 
 pub fn entry_filename(t: DateTime<Utc>, author: &Name, no_op: bool) -> String {
     let ts = format_timestamp(t);
+    let author = author.to_path_component();
     if no_op {
         format!("{ts}__{author}__{NO_OP_SUFFIX}.md")
     } else {
@@ -64,7 +65,7 @@ pub fn parse_filename(filename: &str) -> Option<(DateTime<Utc>, Name, bool)> {
         _ => return None,
     };
     let timestamp = parse_timestamp(ts_part)?;
-    let author = Name::new(name_part).ok()?;
+    let author = Name::from_path_component(name_part).ok()?;
     Some((timestamp, author, no_op))
 }
 
@@ -140,6 +141,14 @@ mod tests {
         let f = entry_filename(t, &name("codex-b"), true);
         assert!(f.ends_with("__codex-b__no-op.md"));
         assert_eq!(parse_filename(&f), Some((t, name("codex-b"), true)));
+
+        let f = entry_filename(t, &name("claude/opus-4.8"), false);
+        assert!(f.ends_with("__claude%2Fopus-4.8.md"));
+        assert!(!f.contains('/'));
+        assert_eq!(
+            parse_filename(&f),
+            Some((t, name("claude/opus-4.8"), false))
+        );
     }
 
     #[test]

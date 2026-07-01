@@ -8,6 +8,7 @@ use anyhow::Context;
 use clap::Parser;
 use rmcp::transport::stdio;
 use rmcp::ServiceExt;
+use substrate_core::Name;
 
 /// One local harness's door into substrate. A launch name is the default
 /// participant, and identity-bearing tools may override it per call for
@@ -34,13 +35,22 @@ struct Args {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+    let default_actor = args
+        .name
+        .as_deref()
+        .map(Name::new)
+        .transpose()
+        .context("invalid participant name")?;
 
     // Log to a file, never stdout — the stdio transport owns stdout.
     let log_dir = substrate_core::home::substrate_home()
         .map(|home| home.join("logs"))
         .unwrap_or_else(std::env::temp_dir);
     fs::create_dir_all(&log_dir)?;
-    let log_name = args.name.as_deref().unwrap_or("no-default");
+    let log_name = default_actor
+        .as_ref()
+        .map(Name::to_path_component)
+        .unwrap_or_else(|| "no-default".to_string());
     let log_file = fs::File::create(log_dir.join(format!("mcp-{log_name}.log")))?;
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -53,11 +63,10 @@ async fn main() -> anyhow::Result<()> {
     let source = spaces::SpaceSource::new(args.spaces, args.spaces_file);
     tracing::info!(
         source = source.describe(),
-        name = args.name.as_deref().unwrap_or("(none)"),
+        name = default_actor.as_ref().map(Name::as_str).unwrap_or("(none)"),
         "substrate-mcp serving"
     );
-    let server = server::SubstrateServer::new(source, args.name.as_deref())
-        .context("invalid participant name")?;
+    let server = server::SubstrateServer::new(source, default_actor.as_ref().map(Name::as_str))?;
 
     let service = server.serve(stdio()).await?;
     service.waiting().await?;
