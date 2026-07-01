@@ -1,10 +1,10 @@
 # Notes for agents working on this repo
 
-The spec is [docs/notes/README.md](docs/notes/README.md). Read it before changing behavior — it is short and every line is load-bearing.
+The spec is [docs/notes/README.md](docs/notes/README.md). Read it before changing behavior — it is short and every line is important.
 
 ## Orientation for a new session
 
-- **Layout**: `crates/substrate-core` (data model, storage, turn engine, transcript) · `crates/substrate-mcp` (stdio MCP server, one process per agent) · `crates/substrate-tui` (the `substrate` binary: CLI subcommands + human TUI + `serve`/`attend`/`watch`).
+- **Layout**: `crates/substrate-core` (data model, storage, turn engine, transcript) · `crates/substrate-mcp` (stdio MCP server, one process per agent/harness) · `crates/substrate-tui` (the `substrate` binary: CLI subcommands + human TUI + `serve`/`attend`/`watch`).
 - **This repo is itself a substrate space.** `.substrate/` here holds live threads, and the dev agent (`claude`) is a registered participant — you may be asked to "take your turn in thread X". Use the substrate MCP tools; call `about` first if they're new to you. The room's findings often become this repo's fixes, sometimes within the same rotation.
 - **Code changes reach nobody until reinstalled.** Live sessions (TUIs, MCP servers, `attend` loops, other projects) run `~/.cargo/bin/substrate{,-mcp}`, not `target/debug`. After a change passes the gate: `cargo install --path crates/substrate-tui --force` and `--path crates/substrate-mcp --force`. Running MCP servers pick the new binary up on their next harness respawn — expect a lag, and don't mistake a stale server for a failed fix (we've burned time on that twice).
 - **These binaries are live infrastructure now.** Other projects' spaces and `~/.substrate` (identity, space registry, agents.yaml) depend on the current on-disk formats. Still alpha — breaking changes are allowed — but they now break *neighbors*, not just this garage: say so loudly in the change description, and prefer formats that tolerate unknown fields.
@@ -15,7 +15,7 @@ The spec is [docs/notes/README.md](docs/notes/README.md). Read it before changin
 - **Group-first.** N humans + M agents are peers in one room. Any feature must hold for multiple humans AND multiple mixed-provider agents at once. No one-to-one routing, no DMs, no provider coupling anywhere.
 - **The filesystem is the shared state.** Concurrent processes (TUIs, MCP servers, scripts) coordinate only through the space directory. No daemon, no cache of record. Every operation re-reads from disk.
 - **Append-only.** Entries are never edited or deleted. No interface may grow a mutation tool.
-- **The runtime names files.** Author identity comes from the filename, which only the runtime writes (`--name` is fixed at process launch). Nothing in thread content may influence identity.
+- **The runtime names files.** Author identity comes from the filename, which only the runtime writes. MCP resolves identity from a per-call `participant_name`, falling back to launch `--name`; this is a trusted-local-lab relaxation for multi-persona harnesses. Nothing in thread content may influence identity, and the turn engine still enforces that the resolved participant may only act on their own turn or moderator role.
 - **Spaces are the trust boundary.** One `substrate-mcp` may serve many spaces (`crates/substrate-mcp/src/spaces.rs`), but names are registered per-space, identity is verified against each space's own registry, and writes always name their space explicitly when more than one is configured — never an ambient "current space". `~/.substrate` (`substrate-core/src/home.rs`) is machine-level *convenience* (identity, space registry, crew template, agent commands), never space-level authority. A space's own data lives in `<project>/.substrate/` (config.yaml + threads/), git-ignored by default — lineage is opt-in via .gitignore or `substrate read <thread> > docs/…`.
 - **The set of spaces is filesystem-truth too.** The MCP server and `substrate attend` re-read `~/.substrate/spaces.yaml` on every call/cycle; never cache it across calls. A `substrate init` anywhere must be visible to running sessions without restarts.
 - **The wizard never creates without consent.** `substrate` in a non-space directory asks before writing anything; typo-running it must stay harmless.

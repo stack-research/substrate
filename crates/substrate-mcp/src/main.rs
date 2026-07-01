@@ -9,8 +9,9 @@ use clap::Parser;
 use rmcp::transport::stdio;
 use rmcp::ServiceExt;
 
-/// One agent's door into substrate. Identity is fixed at launch: tool calls
-/// can never write as anyone else. One server can serve many spaces.
+/// One local harness's door into substrate. A launch name is the default
+/// participant, and identity-bearing tools may override it per call for
+/// trusted multi-persona harnesses. One server can serve many spaces.
 #[derive(Parser)]
 #[command(name = "substrate-mcp")]
 struct Args {
@@ -24,9 +25,10 @@ struct Args {
     #[arg(long)]
     spaces_file: Option<PathBuf>,
 
-    /// Who this process is in the room(s) — a registered participant name.
+    /// Default participant name. If omitted, identity-bearing tools require a
+    /// participant_name argument per call.
     #[arg(long)]
-    name: String,
+    name: Option<String>,
 }
 
 #[tokio::main]
@@ -38,7 +40,8 @@ async fn main() -> anyhow::Result<()> {
         .map(|home| home.join("logs"))
         .unwrap_or_else(std::env::temp_dir);
     fs::create_dir_all(&log_dir)?;
-    let log_file = fs::File::create(log_dir.join(format!("mcp-{}.log", args.name)))?;
+    let log_name = args.name.as_deref().unwrap_or("no-default");
+    let log_file = fs::File::create(log_dir.join(format!("mcp-{log_name}.log")))?;
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
@@ -48,9 +51,13 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let source = spaces::SpaceSource::new(args.spaces, args.spaces_file);
-    tracing::info!(source = source.describe(), name = %args.name, "substrate-mcp serving");
-    let server =
-        server::SubstrateServer::new(source, &args.name).context("invalid participant name")?;
+    tracing::info!(
+        source = source.describe(),
+        name = args.name.as_deref().unwrap_or("(none)"),
+        "substrate-mcp serving"
+    );
+    let server = server::SubstrateServer::new(source, args.name.as_deref())
+        .context("invalid participant name")?;
 
     let service = server.serve(stdio()).await?;
     service.waiting().await?;

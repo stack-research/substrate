@@ -38,32 +38,41 @@ const TOOL_NAMES: &[&str] = &[
 #[derive(Clone)]
 pub struct SubstrateServer {
     source: SpaceSource,
-    me: Name,
+    default_actor: Option<Name>,
 }
 
 impl SubstrateServer {
     /// Startup never fails for an empty registry or an unregistered name —
     /// spaces can be created (and the agent registered) mid-session; the
     /// registry is re-read on every tool call.
-    pub fn new(source: SpaceSource, me: &str) -> anyhow::Result<Self> {
-        let me = Name::new(me)?;
-        match source.load() {
-            Ok(set) if set.is_empty() => {
-                tracing::warn!(%me, "no spaces configured yet ({})", source.describe());
-            }
-            Ok(set) => {
-                let registered = set.registered_in(&me);
-                if registered.is_empty() {
-                    tracing::warn!(
-                        %me,
-                        spaces = set.labels().join(","),
-                        "not registered in any configured space (yet)"
-                    );
+    pub fn new(source: SpaceSource, default_actor: Option<&str>) -> anyhow::Result<Self> {
+        let default_actor = default_actor.map(Name::new).transpose()?;
+        if let Some(me) = &default_actor {
+            match source.load() {
+                Ok(set) if set.is_empty() => {
+                    tracing::warn!(%me, "no spaces configured yet ({})", source.describe());
                 }
+                Ok(set) => {
+                    let registered = set.registered_in(me);
+                    if registered.is_empty() {
+                        tracing::warn!(
+                            %me,
+                            spaces = set.labels().join(","),
+                            "not registered in any configured space (yet)"
+                        );
+                    }
+                }
+                Err(e) => tracing::warn!("could not load spaces at startup: {e}"),
             }
-            Err(e) => tracing::warn!("could not load spaces at startup: {e}"),
+        } else {
+            tracing::info!(
+                "no default participant configured; identity-bearing tools require participant_name"
+            );
         }
-        Ok(Self { source, me })
+        Ok(Self {
+            source,
+            default_actor,
+        })
     }
 
     fn load(&self) -> Result<SpaceSet, ErrorData> {
@@ -75,6 +84,30 @@ impl SubstrateServer {
     fn resolve<'a>(set: &'a SpaceSet, label: Option<&str>) -> Result<&'a Space, ErrorData> {
         set.resolve(label)
             .map_err(|message| ErrorData::invalid_params(message, None))
+    }
+
+    /// Per Dan's ruling for this trusted local lab, MCP identity may now be
+    /// supplied per call so one harness can drive several personas. The guard
+    /// remains the turn engine: the resolved participant must be registered,
+    /// in the thread, and holding the floor or moderator role for the action.
+    fn actor(&self, participant_name: Option<&str>) -> Result<Name, CallToolResult> {
+        let Some(raw) = participant_name.or(self.default_actor.as_ref().map(Name::as_str)) else {
+            return Err(CallToolResult::error(vec![Content::text(
+                "participant_name is required because this substrate-mcp server \
+                 was started without --name. Pass the registered participant to \
+                 act as, or start the server with --name <participant> as a \
+                 default."
+                    .to_string(),
+            )]));
+        };
+        Name::new(raw.trim()).map_err(|e| CallToolResult::error(vec![Content::text(e.to_string())]))
+    }
+
+    fn default_actor_text(&self) -> String {
+        self.default_actor
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "(none; pass participant_name per call)".to_string())
     }
 
     /// Domain rejections (not your turn, ended, …) are tool-level errors the
@@ -115,7 +148,12 @@ impl SubstrateServer {
         )?))
     }
 
-    fn status_text(&self, space: &Space, thread: &Name) -> Result<String, SubstrateError> {
+    fn status_text(
+        &self,
+        space: &Space,
+        thread: &Name,
+        actor: &Name,
+    ) -> Result<String, SubstrateError> {
         let status = turn::turn_status(space, thread)?;
         let (_, total_lines) = transcript::window(&Self::render(space, thread)?, Window::All);
         let order: Vec<String> = status
@@ -133,6 +171,7 @@ impl SubstrateServer {
             "thread: {thread}\n\
              topic: {topic}\n\
              status: {conv_status:?}\n\
+             participant: {actor}\n\
              current turn: {current}\n\
              your turn: {yours}\n\
              paused on moderator: {paused}\n\
@@ -140,8 +179,9 @@ impl SubstrateServer {
              transcript lines: {total_lines}\n",
             topic = status.topic,
             conv_status = status.status,
+            actor = actor,
             current = status.current,
-            yours = if status.current == self.me {
+            yours = if &status.current == actor {
                 "yes"
             } else {
                 "no"
@@ -149,29 +189,34 @@ impl SubstrateServer {
             paused = if status.paused { "yes" } else { "no" },
             order = order.join(" → "),
         );
-        if let Some(remaining) = status.quieted.get(&self.me) {
+        if let Some(remaining) = status.quieted.get(actor) {
             out.push_str(&format!(
                 "you are quieted for your next {remaining} turn(s)\n"
             ));
         }
         out.push_str(Self::next_moves(
-            status.current == self.me,
+            &status.current == actor,
             status.status == substrate_core::ThreadStatus::Ended,
         ));
         Ok(out)
     }
 
-    /// Moderator gate: floor-ops are allowed only when THIS server's fixed
-    /// identity is the thread's moderator. Returns the rejection to send back
-    /// when it isn't — a domain error the model should read and act on.
-    fn require_moderator(&self, space: &Space, thread: &Name) -> Result<(), CallToolResult> {
+    /// Moderator gate: floor-ops are allowed only when the resolved actor is
+    /// the thread's moderator. Returns the rejection to send back when it
+    /// isn't — a domain error the model should read and act on.
+    fn require_moderator(
+        &self,
+        space: &Space,
+        thread: &Name,
+        actor: &Name,
+    ) -> Result<(), CallToolResult> {
         match turn::turn_status(space, thread) {
-            Ok(status) if status.moderator == self.me => Ok(()),
+            Ok(status) if &status.moderator == actor => Ok(()),
             Ok(status) => Err(CallToolResult::error(vec![Content::text(format!(
                 "only the moderator may do that — {moderator} moderates '{thread}', not you \
                  ({me}). You can still take part on your turn with write_entry.",
                 moderator = status.moderator,
-                me = self.me,
+                me = actor,
             ))])),
             Err(e) => Err(Self::domain_error(e)),
         }
@@ -179,12 +224,26 @@ impl SubstrateServer {
 
     /// A moderator op succeeded: confirm what changed, then show the fresh
     /// floor state so the moderator sees the room as it now stands.
-    fn moderator_ok(&self, space: &Space, thread: &Name, confirmation: &str) -> CallToolResult {
+    fn moderator_ok(
+        &self,
+        space: &Space,
+        thread: &Name,
+        actor: &Name,
+        confirmation: &str,
+    ) -> CallToolResult {
         let status = self
-            .status_text(space, thread)
+            .status_text(space, thread, actor)
             .unwrap_or_else(|e| e.to_string());
         CallToolResult::success(vec![Content::text(format!("{confirmation}\n\n{status}"))])
     }
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct ListParams {
+    /// Registered participant to evaluate "you"/"your turn" against. Defaults
+    /// to --name when the server was launched with one.
+    #[serde(default, alias = "participant-name", alias = "participant")]
+    pub participant_name: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -194,6 +253,10 @@ pub struct ThreadParams {
     pub space: Option<String>,
     /// Thread name, as shown by list_threads.
     pub thread: String,
+    /// Registered participant to evaluate "you"/"your turn" against. Defaults
+    /// to --name when the server was launched with one.
+    #[serde(default, alias = "participant-name", alias = "participant")]
+    pub participant_name: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -222,6 +285,10 @@ pub struct WriteParams {
     /// Your entry, in markdown, addressed to the whole thread. Reply exactly
     /// "pass" (or "no-op" or "...") to take a no-op turn.
     pub content: String,
+    /// Registered participant to write as. Defaults to --name when the server
+    /// was launched with one.
+    #[serde(default, alias = "participant-name", alias = "participant")]
+    pub participant_name: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -235,6 +302,10 @@ pub struct WaitParams {
     /// A timeout is NOT the end — call this again until status is Ended.
     #[serde(default)]
     pub timeout_secs: Option<u64>,
+    /// Registered participant to wait as. Defaults to --name when the server
+    /// was launched with one.
+    #[serde(default, alias = "participant-name", alias = "participant")]
+    pub participant_name: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -242,6 +313,10 @@ pub struct NewThreadParams {
     /// Space label (required only when several spaces are configured).
     #[serde(default)]
     pub space: Option<String>,
+    /// Registered participant creating the thread. Defaults to --name when the
+    /// server was launched with one.
+    #[serde(default, alias = "participant-name", alias = "participant")]
+    pub participant_name: Option<String>,
     /// Thread name to create.
     #[serde(alias = "thread")]
     pub name: String,
@@ -262,6 +337,10 @@ pub struct ModNameParams {
     pub space: Option<String>,
     /// Thread name, as shown by list_threads.
     pub thread: String,
+    /// Registered participant acting as moderator. Defaults to --name when the
+    /// server was launched with one.
+    #[serde(default, alias = "participant-name", alias = "participant")]
+    pub participant_name: Option<String>,
     /// The participant to act on.
     pub name: String,
 }
@@ -273,6 +352,10 @@ pub struct ModQuietParams {
     pub space: Option<String>,
     /// Thread name, as shown by list_threads.
     pub thread: String,
+    /// Registered participant acting as moderator. Defaults to --name when the
+    /// server was launched with one.
+    #[serde(default, alias = "participant-name", alias = "participant")]
+    pub participant_name: Option<String>,
     /// The participant to quiet.
     pub name: String,
     /// Number of their upcoming turns to skip. 0 lifts an existing quiet.
@@ -286,6 +369,10 @@ pub struct ModOrderParams {
     pub space: Option<String>,
     /// Thread name, as shown by list_threads.
     pub thread: String,
+    /// Registered participant acting as moderator. Defaults to --name when the
+    /// server was launched with one.
+    #[serde(default, alias = "participant-name", alias = "participant")]
+    pub participant_name: Option<String>,
     /// The new speaking order. You (the moderator) are always placed first, so
     /// you need not list yourself; anyone omitted leaves the room.
     pub order: Vec<String>,
@@ -298,6 +385,10 @@ pub struct ModTopicParams {
     pub space: Option<String>,
     /// Thread name, as shown by list_threads.
     pub thread: String,
+    /// Registered participant acting as moderator. Defaults to --name when the
+    /// server was launched with one.
+    #[serde(default, alias = "participant-name", alias = "participant")]
+    pub participant_name: Option<String>,
     /// The new topic line.
     pub topic: String,
 }
@@ -322,7 +413,7 @@ impl SubstrateServer {
              Local-first, turn-based group conversations between humans, agents, and \
              anything else. Everyone in a thread is a peer; every entry is markdown, \
              append-only, and addressed to the whole thread. No edits, no deletes, no \
-             private messages. You are '{me}'. Spaces you can see: {spaces}.\n\
+             private messages. Default participant: {me}. Spaces you can see: {spaces}.\n\
              \n\
              ## The loop (this is the whole protocol)\n\
              1. list_threads — find threads and see whose turn it is.\n\
@@ -339,8 +430,12 @@ impl SubstrateServer {
              \n\
              ## Good to know\n\
              - Turns are enforced: writing out of turn is rejected (the error names \
-             who holds the floor). You can never write as anyone else — identity is \
-             fixed to this server process.\n\
+             who holds the floor). Identity-bearing tools accept participant_name; \
+             when omitted they use this server's default participant. If there is no \
+             default, pass participant_name on each call.\n\
+             - A trusted local harness may drive multiple personas from one MCP \
+             server by setting participant_name per call. Turn enforcement is still \
+             the guard: only that participant can act on that participant's turn.\n\
              - The moderator speaks first: a new thread opens paused on them, and \
              their opening entry carries the instructions/context for the thread — \
              read it carefully before your first turn.\n\
@@ -359,7 +454,7 @@ impl SubstrateServer {
              new agent), quiet (turns = 0 lifts it), reorder_turns, set_topic, \
              end_thread, and resume_thread. Non-moderators are refused, with the \
              moderator named; only the thread's moderator may use them.",
-            me = self.me,
+            me = self.default_actor_text(),
             version = env!("CARGO_PKG_VERSION"),
             tools = tools,
         ))]))
@@ -372,20 +467,24 @@ impl SubstrateServer {
         &self,
         Parameters(p): Parameters<NewThreadParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let actor = match self.actor(p.participant_name.as_deref()) {
+            Ok(actor) => actor,
+            Err(reject) => return Ok(reject),
+        };
         let set = self.load()?;
         let space = Self::resolve(&set, p.space.as_deref())?;
         // Thread creation is space-level: any registered participant can open a
         // room. Unregistered MCP identities cannot write space config, while
         // substrate-core still owns the config schema, participant validation,
         // and moderator-first opening floor invariant.
-        if let Err(e) = space.participant(self.me.as_str()) {
+        if let Err(e) = space.participant(actor.as_str()) {
             return Ok(match e {
                 SubstrateError::UnknownParticipant(_) => {
                     CallToolResult::error(vec![Content::text(format!(
                         "only registered participants may create threads in this space — \
-                         this server is '{me}', which is not registered here. Ask a \
+                         the resolved participant is '{me}', which is not registered here. Ask a \
                          moderator to add you first.",
-                        me = self.me
+                        me = actor
                     ))])
                 }
                 e => Self::domain_error(e),
@@ -434,7 +533,14 @@ impl SubstrateServer {
     #[tool(
         description = "List every thread you can see, across all configured spaces: space, topic, status, whose turn it is, and whether it's yours. Pass `space` and `thread` as separate arguments to the other tools."
     )]
-    fn list_threads(&self) -> Result<CallToolResult, ErrorData> {
+    fn list_threads(
+        &self,
+        Parameters(p): Parameters<ListParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let actor = match self.actor(p.participant_name.as_deref()) {
+            Ok(actor) => actor,
+            Err(reject) => return Ok(reject),
+        };
         let set = self.load()?;
         let mut out = String::new();
         for labeled in set.iter() {
@@ -457,7 +563,7 @@ impl SubstrateServer {
                         "thread: {conv}{space_part} · status: {status:?} · turn: {current}{yours}{paused} · topic: {topic}\n",
                         status = s.status,
                         current = s.current,
-                        yours = if s.current == self.me { " (you)" } else { "" },
+                        yours = if s.current == actor { " (you)" } else { "" },
                         paused = if s.paused { " (paused on moderator)" } else { "" },
                         topic = s.topic,
                     ))
@@ -518,10 +624,14 @@ impl SubstrateServer {
         &self,
         Parameters(p): Parameters<WriteParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let actor = match self.actor(p.participant_name.as_deref()) {
+            Ok(actor) => actor,
+            Err(reject) => return Ok(reject),
+        };
         let set = self.load()?;
         let space = Self::resolve(&set, p.space.as_deref())?;
         let thread = parse_name(&p.thread)?;
-        match turn::write_entry(space, &thread, &self.me, &p.content) {
+        match turn::write_entry(space, &thread, &actor, &p.content) {
             Ok(written) => Ok(CallToolResult::success(vec![Content::text(format!(
                 "recorded{no_op} — next turn: {next}{paused}\n{moves}",
                 no_op = if written.no_op { " as a no-op" } else { "" },
@@ -544,10 +654,14 @@ impl SubstrateServer {
         &self,
         Parameters(p): Parameters<ThreadParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let actor = match self.actor(p.participant_name.as_deref()) {
+            Ok(actor) => actor,
+            Err(reject) => return Ok(reject),
+        };
         let set = self.load()?;
         let space = Self::resolve(&set, p.space.as_deref())?;
         let thread = parse_name(&p.thread)?;
-        match self.status_text(space, &thread) {
+        match self.status_text(space, &thread, &actor) {
             Ok(text) => Ok(CallToolResult::success(vec![Content::text(text)])),
             Err(e) => Ok(Self::domain_error(e)),
         }
@@ -560,6 +674,10 @@ impl SubstrateServer {
         &self,
         Parameters(p): Parameters<WaitParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let actor = match self.actor(p.participant_name.as_deref()) {
+            Ok(actor) => actor,
+            Err(reject) => return Ok(reject),
+        };
         let set = self.load()?;
         let space = Self::resolve(&set, p.space.as_deref())?.clone();
         drop(set);
@@ -594,11 +712,11 @@ impl SubstrateServer {
                 Err(e) => return Ok(Self::domain_error(e)),
             };
             let done =
-                status.current == self.me || status.status == substrate_core::ThreadStatus::Ended;
+                status.current == actor || status.status == substrate_core::ThreadStatus::Ended;
             let now = tokio::time::Instant::now();
             if done || now >= deadline {
                 let mut text = self
-                    .status_text(&space, &thread)
+                    .status_text(&space, &thread, &actor)
                     .unwrap_or_else(|e| e.to_string());
                 if !done {
                     text.push_str(
@@ -629,15 +747,24 @@ impl SubstrateServer {
         &self,
         Parameters(p): Parameters<ModNameParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let actor = match self.actor(p.participant_name.as_deref()) {
+            Ok(actor) => actor,
+            Err(reject) => return Ok(reject),
+        };
         let set = self.load()?;
         let space = Self::resolve(&set, p.space.as_deref())?;
         let thread = parse_name(&p.thread)?;
         let name = parse_name(&p.name)?;
-        if let Err(reject) = self.require_moderator(space, &thread) {
+        if let Err(reject) = self.require_moderator(space, &thread, &actor) {
             return Ok(reject);
         }
         match turn::set_next(space, &thread, &name) {
-            Ok(()) => Ok(self.moderator_ok(space, &thread, &format!("the floor passes to {name}"))),
+            Ok(()) => Ok(self.moderator_ok(
+                space,
+                &thread,
+                &actor,
+                &format!("the floor passes to {name}"),
+            )),
             Err(e) => Ok(Self::domain_error(e)),
         }
     }
@@ -649,11 +776,15 @@ impl SubstrateServer {
         &self,
         Parameters(p): Parameters<ModNameParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let actor = match self.actor(p.participant_name.as_deref()) {
+            Ok(actor) => actor,
+            Err(reject) => return Ok(reject),
+        };
         let set = self.load()?;
         let space = Self::resolve(&set, p.space.as_deref())?;
         let thread = parse_name(&p.thread)?;
         let name = parse_name(&p.name)?;
-        if let Err(reject) = self.require_moderator(space, &thread) {
+        if let Err(reject) = self.require_moderator(space, &thread, &actor) {
             return Ok(reject);
         }
         // mirror the TUI: the moderator naming someone IS the registration
@@ -669,6 +800,7 @@ impl SubstrateServer {
             Ok(()) => Ok(self.moderator_ok(
                 space,
                 &thread,
+                &actor,
                 &format!("{name} joins the thread at the end of the round{registered}"),
             )),
             Err(e) => Ok(Self::domain_error(e)),
@@ -682,11 +814,15 @@ impl SubstrateServer {
         &self,
         Parameters(p): Parameters<ModQuietParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let actor = match self.actor(p.participant_name.as_deref()) {
+            Ok(actor) => actor,
+            Err(reject) => return Ok(reject),
+        };
         let set = self.load()?;
         let space = Self::resolve(&set, p.space.as_deref())?;
         let thread = parse_name(&p.thread)?;
         let name = parse_name(&p.name)?;
-        if let Err(reject) = self.require_moderator(space, &thread) {
+        if let Err(reject) = self.require_moderator(space, &thread, &actor) {
             return Ok(reject);
         }
         match turn::quiet(space, &thread, &name, p.turns) {
@@ -696,7 +832,7 @@ impl SubstrateServer {
                 } else {
                     format!("{name} quieted for {} turn(s)", p.turns)
                 };
-                Ok(self.moderator_ok(space, &thread, &confirmation))
+                Ok(self.moderator_ok(space, &thread, &actor, &confirmation))
             }
             Err(e) => Ok(Self::domain_error(e)),
         }
@@ -709,10 +845,14 @@ impl SubstrateServer {
         &self,
         Parameters(p): Parameters<ModOrderParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let actor = match self.actor(p.participant_name.as_deref()) {
+            Ok(actor) => actor,
+            Err(reject) => return Ok(reject),
+        };
         let set = self.load()?;
         let space = Self::resolve(&set, p.space.as_deref())?;
         let thread = parse_name(&p.thread)?;
-        if let Err(reject) = self.require_moderator(space, &thread) {
+        if let Err(reject) = self.require_moderator(space, &thread, &actor) {
             return Ok(reject);
         }
         let order: Vec<Name> = match p
@@ -728,6 +868,7 @@ impl SubstrateServer {
             Ok(()) => Ok(self.moderator_ok(
                 space,
                 &thread,
+                &actor,
                 &format!("turn order set: {}", p.order.join(" → ")),
             )),
             Err(e) => Ok(Self::domain_error(e)),
@@ -739,14 +880,20 @@ impl SubstrateServer {
         &self,
         Parameters(p): Parameters<ModTopicParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let actor = match self.actor(p.participant_name.as_deref()) {
+            Ok(actor) => actor,
+            Err(reject) => return Ok(reject),
+        };
         let set = self.load()?;
         let space = Self::resolve(&set, p.space.as_deref())?;
         let thread = parse_name(&p.thread)?;
-        if let Err(reject) = self.require_moderator(space, &thread) {
+        if let Err(reject) = self.require_moderator(space, &thread, &actor) {
             return Ok(reject);
         }
         match turn::set_topic(space, &thread, &p.topic) {
-            Ok(()) => Ok(self.moderator_ok(space, &thread, &format!("topic set: {}", p.topic))),
+            Ok(()) => {
+                Ok(self.moderator_ok(space, &thread, &actor, &format!("topic set: {}", p.topic)))
+            }
             Err(e) => Ok(Self::domain_error(e)),
         }
     }
@@ -758,14 +905,18 @@ impl SubstrateServer {
         &self,
         Parameters(p): Parameters<ThreadParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let actor = match self.actor(p.participant_name.as_deref()) {
+            Ok(actor) => actor,
+            Err(reject) => return Ok(reject),
+        };
         let set = self.load()?;
         let space = Self::resolve(&set, p.space.as_deref())?;
         let thread = parse_name(&p.thread)?;
-        if let Err(reject) = self.require_moderator(space, &thread) {
+        if let Err(reject) = self.require_moderator(space, &thread, &actor) {
             return Ok(reject);
         }
         match turn::end_thread(space, &thread) {
-            Ok(()) => Ok(self.moderator_ok(space, &thread, "thread ended")),
+            Ok(()) => Ok(self.moderator_ok(space, &thread, &actor, "thread ended")),
             Err(e) => Ok(Self::domain_error(e)),
         }
     }
@@ -777,16 +928,21 @@ impl SubstrateServer {
         &self,
         Parameters(p): Parameters<ThreadParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let actor = match self.actor(p.participant_name.as_deref()) {
+            Ok(actor) => actor,
+            Err(reject) => return Ok(reject),
+        };
         let set = self.load()?;
         let space = Self::resolve(&set, p.space.as_deref())?;
         let thread = parse_name(&p.thread)?;
-        if let Err(reject) = self.require_moderator(space, &thread) {
+        if let Err(reject) = self.require_moderator(space, &thread, &actor) {
             return Ok(reject);
         }
         match turn::resume_thread(space, &thread) {
             Ok(()) => Ok(self.moderator_ok(
                 space,
                 &thread,
+                &actor,
                 "thread resumed — the floor is yours; say why the thread is back",
             )),
             Err(e) => Ok(Self::domain_error(e)),
@@ -805,9 +961,11 @@ impl ServerHandler for SubstrateServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::from_build_env())
             .with_instructions(format!(
-                "You are participant '{me}' in substrate: local-first, turn-based \
-                 group conversations between humans, agents, and anything else — a \
-                 shared chalkboard. New here? Call the `about` tool for the full \
+                "Your default substrate participant is '{me}': local-first, \
+                 turn-based group conversations between humans, agents, and \
+                 anything else — a shared chalkboard. Identity-bearing tools \
+                 accept participant_name; when omitted they use this default. \
+                 New here? Call the `about` tool for the full \
                  protocol. Spaces ({spaces}) are re-read on every call, so \
                  list_threads always shows the current threads. Ground rules:\n\
                  - Rooms are turn-based. Call wait_for_turn (or check_turn) before \
@@ -819,10 +977,13 @@ impl ServerHandler for SubstrateServer {
                  - If you have nothing to add on your turn, write exactly 'pass' \
                  (or 'no-op' or '...'): it yields the floor without clutter.\n\
                  - When the moderator holds the floor the thread is paused — wait it out.\n\
+                 - A trusted local harness may drive multiple personas from one \
+                 server by passing participant_name per call; turn enforcement \
+                 remains the guard.\n\
                  - read_thread returns the shared transcript with no-op turns \
                  omitted; pass from_line = your previous line total + 1 to read only \
                  what's new.",
-                me = self.me
+                me = self.default_actor_text()
             ))
     }
 }

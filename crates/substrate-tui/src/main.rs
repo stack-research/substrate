@@ -35,14 +35,14 @@ enum Command {
         #[arg(long)]
         kind: ParticipantKind,
     },
-    /// Create a thread. The moderator always speaks last in the round.
+    /// Create a thread. The moderator always speaks first.
     New {
         name: String,
         #[arg(long)]
         topic: String,
         #[arg(long)]
         moderator: String,
-        /// Speaking order, comma-separated (moderator is appended last).
+        /// Speaking order, comma-separated (moderator is prepended first).
         #[arg(long, value_delimiter = ',')]
         turns: Vec<String>,
     },

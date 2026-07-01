@@ -212,6 +212,89 @@ async fn two_agents_converse_through_the_protocol() {
 }
 
 #[tokio::test]
+async fn per_call_identity_drives_multiple_personas_with_default_fallback() {
+    let (dir, space) = set_up_space();
+    let multi = connect_args(&[("--space", dir.path().to_str().unwrap())]).await;
+    let fallback = connect(&dir, "codex-b").await;
+
+    let (text, err) = call(&multi, "list_threads", serde_json::json!({})).await;
+    assert!(err, "{text}");
+    assert!(text.contains("participant_name is required"), "{text}");
+
+    let (text, err) = call(
+        &multi,
+        "check_turn",
+        serde_json::json!({"thread": "lab", "participant_name": "claude-a"}),
+    )
+    .await;
+    assert!(!err, "{text}");
+    assert!(text.contains("participant: claude-a"), "{text}");
+    assert!(text.contains("→ not your turn"), "{text}");
+
+    // thread opens moderator-first; once user-name opens, claude-a holds the floor.
+    turn::write_entry(
+        &space,
+        &Name::new("lab").unwrap(),
+        &Name::new("user-name").unwrap(),
+        "moderator opening",
+    )
+    .unwrap();
+
+    let (text, err) = call(
+        &multi,
+        "write_entry",
+        serde_json::json!({
+            "thread": "lab",
+            "participant_name": "codex-b",
+            "content": "too early for codex-b"
+        }),
+    )
+    .await;
+    assert!(err, "{text}");
+    assert!(text.contains("claude-a"), "{text}");
+
+    let (text, err) = call(
+        &multi,
+        "list_threads",
+        serde_json::json!({"participant_name": "claude-a"}),
+    )
+    .await;
+    assert!(!err, "{text}");
+    assert!(text.contains("turn: claude-a (you)"), "{text}");
+
+    let (text, err) = call(
+        &multi,
+        "write_entry",
+        serde_json::json!({
+            "thread": "lab",
+            "participant_name": "claude-a",
+            "content": "per-call identity from claude-a"
+        }),
+    )
+    .await;
+    assert!(!err, "{text}");
+    assert!(text.contains("next turn: codex-b"), "{text}");
+
+    // Existing --name configurations remain backward compatible: no
+    // participant_name falls back to the launch default.
+    let (text, err) = call(
+        &fallback,
+        "write_entry",
+        serde_json::json!({"thread": "lab", "content": "fallback identity from codex-b"}),
+    )
+    .await;
+    assert!(!err, "{text}");
+
+    let entries =
+        substrate_core::transcript::load_entries(&space, &Name::new("lab").unwrap()).unwrap();
+    let authors: Vec<&str> = entries.iter().map(|e| e.meta.author.as_str()).collect();
+    assert_eq!(authors, ["user-name", "claude-a", "codex-b"]);
+
+    multi.cancel().await.unwrap();
+    fallback.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn new_thread_creates_via_core_and_opens_on_moderator() {
     let (dir, space) = set_up_space();
     let creator = connect(&dir, "claude-a").await;
@@ -528,4 +611,39 @@ async fn moderator_ops_are_role_gated() {
 
     moderator.cancel().await.unwrap();
     member.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn per_call_identity_gates_moderator_ops() {
+    let (dir, _space) = set_up_agent_moderated();
+    let multi = connect_args(&[("--space", dir.path().to_str().unwrap())]).await;
+
+    let (text, err) = call(
+        &multi,
+        "set_next",
+        serde_json::json!({
+            "thread": "modtest",
+            "participant_name": "codex-b",
+            "name": "codex-b"
+        }),
+    )
+    .await;
+    assert!(err, "{text}");
+    assert!(text.contains("claude-a"), "{text}");
+
+    let (text, err) = call(
+        &multi,
+        "set_next",
+        serde_json::json!({
+            "thread": "modtest",
+            "participant_name": "claude-a",
+            "name": "codex-b"
+        }),
+    )
+    .await;
+    assert!(!err, "{text}");
+    assert!(text.contains("current turn: codex-b"), "{text}");
+    assert!(text.contains("participant: claude-a"), "{text}");
+
+    multi.cancel().await.unwrap();
 }

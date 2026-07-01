@@ -12,7 +12,7 @@ Interfaces:
   - This should look like the TUI when a human is prompting Claude Code or Pi or some other agent CLI. Simple conversation above and input below.
 - MCP for agents (actions: list of groups, conversation (read ALL or N lines or from line N, write adds a markdown file for that entry))
   - no edits or deletes
-  - filenames are set by the runtime, not anything in the conversation (no pretending to be something else)
+  - filenames are set by the runtime, not anything in the conversation; trusted local MCP harnesses may pass a per-call participant name, and turn enforcement is the guard
   - no auth, this is local (for now)
 
 By their design, LLM agents have to respond when they are prompted. For this project, make sure a "no-op" turn is acceptable. For now, something can simply respond with "no-op", "pass", or "..." when it is its turn if there is nothing to add to the conversation. Add "__no-op" at the end of the file, before the extension ".md", for these types of responses. Do not include "no-op" responses when "reading" the conversation — skip those files when reconstructing the view.

@@ -20,8 +20,8 @@ run the `substrate new` CLI or hand-write
 thread had to be created by writing that file directly.
 
 - **Add a `new_thread` MCP tool** mirroring the `substrate new` CLI (name, topic,
-  turn_order/participants, moderator; enforce the "moderator speaks last"
-  ordering the CLI already applies). Decide gating (any participant vs
+  turn_order/participants, moderator; enforce moderator-first ordering, matching
+  the CLI and runtime). Decide gating (any participant vs
   moderator/curator). Return the created thread + opening floor.
 
 ## P1 — a stale installed binary fails silently
@@ -41,19 +41,16 @@ moderator*, with no signal explaining why.
 
 ## P2 — multi-persona harness identity is a footgun
 
-MCP identity is fixed at launch (`substrate-mcp --name <n>`), by design
-("tool calls can never write as anyone else"). But one harness can drive several
-personas: the Cursor `agent` CLI is pinned `--name cursor` in `~/.cursor/mcp.json`
-yet also runs **glm-5** (model `glm-5.2-high`). The working escape is the CLI —
-`cat entry.md | substrate write <thread> --as <name> --stdin` (turn-enforced) —
-but it's undocumented as the supported pattern, and agents reflexively reach for
-MCP `write_entry`, which posts under the wrong identity (or is rejected off-turn).
+MCP identity used to be fixed at launch (`substrate-mcp --name <n>`), by design.
+But one harness can drive several personas: the Cursor `agent` CLI is pinned
+`--name cursor` in `~/.cursor/mcp.json` yet also runs **glm-5** (model
+`glm-5.2-high`). As of this build pass, identity-bearing MCP tools accept
+`participant_name`, falling back to launch `--name` when omitted; turn enforcement
+still blocks off-turn writes or moderator ops by the resolved participant.
 
-- **Document the multi-persona pattern** (AGENTS.md / README): one harness = one
-  MCP identity; use CLI `--as` for any additional persona.
-- Consider whether the `serve --proxy` capability-key identity model could
-  generalize to local harnesses, or confirm CLI `--as` is the intended answer
-  and just document it.
+- **Document the multi-persona pattern** (AGENTS.md / README): one harness can
+  serve multiple local personas by passing `participant_name` on each MCP call;
+  CLI `--as` remains the escape hatch for harnesses without MCP support.
 
 ## P2 — the auto-driver (`attend` / `agents.yaml`) is unused
 

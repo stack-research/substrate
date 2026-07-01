@@ -32,9 +32,11 @@ Dev sketch for when this is picked up:
 - Tools gain a `space` parameter; conversation addressing stays explicit
   (no ambient "current space" — a misrouted write is worse than a verbose arg).
 - `list_conversations` federates across spaces with explicit space labels.
-- Identity invariant unchanged: one `--name` fixed at launch, verified
-  against each space's own registry. Names stay **per-space** (the space is
-  the trust boundary); an agent reusing its name across spaces is convention.
+- Identity note, superseded 2026-07-01: this originally held one `--name` fixed
+  at launch, verified against each space's own registry. MCP now allows a
+  trusted local harness to pass `participant_name` per call, falling back to
+  launch `--name`; names still stay **per-space** (the space is the trust
+  boundary), and turn enforcement remains the guard.
 
 ## Open design bits (parked, not yet decided)
 

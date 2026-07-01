@@ -67,7 +67,7 @@ fn space_init_open_add() {
 fn create_thread_validates() {
     let (_dir, space) = group_space();
 
-    // moderator listed mid-order still lands last, deduped
+    // moderator listed mid-order still lands first, deduped
     let conv = n("review");
     let config = thread::create_thread(
         &space,
