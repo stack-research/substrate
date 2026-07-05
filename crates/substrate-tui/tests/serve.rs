@@ -81,8 +81,8 @@ fn web_only_participant_takes_turns_over_get() {
 
     // brief (the manual courier packet) addresses the participant
     let brief = run(&["brief", "research", "--for", "kagi"]);
-    assert!(brief.contains("You are participant 'kagi'"), "{brief}");
-    assert!(brief.contains("you — reply now"), "{brief}");
+    assert!(brief.contains("participant: kagi"), "{brief}");
+    assert!(brief.contains("you - reply now"), "{brief}");
     assert!(brief.contains("summarize the plan"), "{brief}");
 
     // start the server with a fixed key; read its actual address
@@ -112,18 +112,30 @@ fn web_only_participant_takes_turns_over_get() {
     assert_eq!(status, 403);
 
     // read the thread: brief + write recipe with the current thread version
-    let (status, body) = get(&addr, &format!("/t/research?key={KEY}"));
+    let (status, body) = get(&addr, &format!("/t/research?key={KEY}&nonce=read-1"));
     assert_eq!(status, 200, "{body}");
-    assert!(body.contains("you — reply now"), "{body}");
+    assert!(body.contains("you - reply now"), "{body}");
     assert!(body.contains("thread version: 1"), "{body}");
-    assert!(body.contains("&turn=1&b64="), "{body}");
+    assert!(
+        body.contains("IMPORTANT: USE A NEW NONCE FOR EVERY REQUEST"),
+        "{body}"
+    );
+    assert!(
+        body.contains("/t/research?key=testkey-abcdef0123456789&nonce=NONCE"),
+        "{body}"
+    );
+    assert!(body.contains("plain ASCII markdown only"), "{body}");
+    assert!(
+        body.contains("&turn=1&nonce=NONCE&b64=URL_SAFE_BASE64_REPLY"),
+        "{body}"
+    );
 
     // stale version is rejected with instructions, not appended
     let reply = "## Summary\n\nGET-only transports can still hold the floor.";
     let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(reply);
     let (status, body) = get(
         &addr,
-        &format!("/t/research/write?key={KEY}&turn=0&b64={b64}"),
+        &format!("/t/research/write?key={KEY}&turn=0&nonce=write-stale&b64={b64}"),
     );
     // write outcomes are HTML documents at 200 — fetch-and-parse tools
     // (Kagi's librarian) can't read bare-text acks or non-2xx responses
@@ -135,7 +147,7 @@ fn web_only_participant_takes_turns_over_get() {
     // correct version: the write lands through the same turn engine
     let (status, body) = get(
         &addr,
-        &format!("/t/research/write?key={KEY}&turn=1&b64={b64}"),
+        &format!("/t/research/write?key={KEY}&turn=1&nonce=write-1&b64={b64}"),
     );
     assert_eq!(status, 200, "{body}");
     assert!(body.contains("entry recorded"), "{body}");
@@ -146,7 +158,7 @@ fn web_only_participant_takes_turns_over_get() {
     // replaying the same URL is harmless: floor moved, outcome in-page
     let (status, body) = get(
         &addr,
-        &format!("/t/research/write?key={KEY}&turn=1&b64={b64}"),
+        &format!("/t/research/write?key={KEY}&turn=1&nonce=replay-1&b64={b64}"),
     );
     assert_eq!(status, 200, "{body}");
     assert!(body.contains("thread changed"), "{body}");
@@ -165,7 +177,10 @@ fn web_only_participant_takes_turns_over_get() {
         "-m",
         "thanks — one more?",
     ]);
-    let (status, body) = get(&addr, &format!("/t/research/write?key={KEY}&text=pass"));
+    let (status, body) = get(
+        &addr,
+        &format!("/t/research/write?key={KEY}&nonce=write-2&text=pass"),
+    );
     assert_eq!(status, 200, "{body}");
     assert!(body.contains("no-op"), "{body}");
 }
@@ -221,16 +236,17 @@ fn responses_defeat_caches() {
     let mut stream = TcpStream::connect(&addr).unwrap();
     write!(
         stream,
-        "GET /t/cachy?key={KEY}&fresh=zz91 HTTP/1.0\r\nHost: t\r\n\r\n"
+        "GET /t/cachy?key={KEY}&nonce=zz91 HTTP/1.0\r\nHost: t\r\n\r\n"
     )
     .unwrap();
     let mut raw = String::new();
     stream.read_to_string(&mut raw).unwrap();
 
-    // no-store headers present; unknown params (&fresh=) ignored; the brief
+    // no-store headers present; the cache-busting nonce is ignored by the
+    // stateless server, but makes the URL unique; the brief
     // itself teaches the cache-busting recipe
     assert!(raw.contains("Cache-Control: no-store"), "{raw}");
     assert!(raw.contains("Pragma: no-cache"), "{raw}");
     assert!(raw.contains("thread version: 0"), "{raw}");
-    assert!(raw.contains("&fresh="), "{raw}");
+    assert!(raw.contains("&nonce=NONCE"), "{raw}");
 }

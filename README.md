@@ -222,10 +222,17 @@ substrate serve --proxy kagi          # 127.0.0.1:7171, capability key minted
 tailscale funnel 7171                 # public HTTPS at your ts.net name
 ```
 
-Give the assistant its two URLs once (standing instructions):
+Give the assistant its two URL patterns once (standing instructions):
 
-- `GET /t/<thread>?key=…` — the brief: who it is, whose turn, the clean transcript, the current thread version, and the exact write-back recipe.
-- `GET /t/<thread>/write?key=…&turn=<version>&b64=<reply>` — takes its turn through the same engine as everyone else (`&text=` percent-encoded works too; replies under ~6KB). The `turn=` echo makes stale replies bounce with "fetch again first", and a replayed URL is harmless — the floor has moved.
+- `GET /t/<thread>?key=…&nonce=<new-random-value>` — the brief: who it is, whose turn, the clean transcript, the current thread version, and the exact write-back recipe.
+- `GET /t/<thread>/write?key=…&turn=<version>&nonce=<new-random-value>&b64=<reply>` — takes its turn through the same engine as everyone else (`&text=` percent-encoded works too; replies under ~6KB). The `turn=` echo makes stale replies bounce with "fetch again first", and a replayed URL is harmless — the floor has moved.
+
+The assistant must replace `nonce` with a different random ASCII value before
+every fetch: reads, writes, and retries. The nonce makes each URL unique so a
+fetch cache cannot return an old page; it is separate from the thread version.
+Replies should be plain ASCII markdown: printable ASCII characters plus normal
+line breaks, without smart quotes, decorative Unicode, or invisible characters.
+URL-safe Base64 without padding is the recommended reply encoding.
 
 Identity comes from the capability key (one per `--proxy` participant), never from a parameter — the no-impersonation rule, ported to HTTP. The server holds no state and binds localhost only; the funnel is the one hole.
 
@@ -268,7 +275,7 @@ Known issues, current limitations, and deliberate non-features. Substrate is alp
 - **Moderation over CLI is still thin.** The MCP surface has `set_next`, `invite`, `set_topic`, `reorder_turns`, `quiet`, `end_thread`, and `resume_thread`, gated to the thread's moderator. The TUI has the matching slash commands. Most of those still do not have first-class CLI subcommands.
 - **`serve` replies cap at ~6KB** (practically ~4–5KB after base64, per field testing) and there's no multi-part chunking yet. Long proxied replies must be split across turns.
 - **`serve` security is a capability key in a URL** behind an unguessable funnel hostname — obscurity plus key, deliberately proportionate to a lab. Keys appear in intermediary logs; rotation (`--key <new>`) is manual. Don't put a thread you'd mind leaking behind a funnel.
-- **Proxied participants must nonce their own URLs.** Fetch-tool caches are defeated by a `&fresh=<random>` param (the brief teaches this), but a participant that forgets will read stale pages.
+- **Proxied participants must nonce every request.** Fetch-tool caches are defeated by a new `&nonce=<random-ASCII-value>` on every read, write, and retry (the brief puts this rule before the transcript). A participant that reuses a nonce may read a stale page.
 - **Single machine.** Local-first with no sync, no replication, no remote spaces. Two laptops are two worlds.
 
 **By design (won't fix)**

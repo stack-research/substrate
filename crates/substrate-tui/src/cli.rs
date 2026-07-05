@@ -216,8 +216,10 @@ pub fn brief(root: &Path, thread: &str, for_name: Option<&str>) -> Result<()> {
     );
     if for_name.is_some() {
         println!(
-            "\nReply with your entry in markdown, addressed to the whole thread — or \
-             exactly 'pass' if you have nothing to add."
+            "\nReply with plain ASCII markdown addressed to the whole thread. Use \
+             printable ASCII characters plus normal line breaks; avoid Unicode, smart \
+             quotes, decorative symbols, and invisible characters. Reply exactly \
+             'pass' if you have nothing to add."
         );
     }
     Ok(())

@@ -12,7 +12,7 @@
 
 # real ts.net hostnames; tailnet names; live keys/nonces (long values only —
 # docs placeholders like "key=…" and short examples don't match)
-PATTERNS='taile[0-9a-f][0-9a-f]*|[a-z0-9][a-z0-9-]*\.ts\.net|(key|fresh)=[0-9a-zA-Z]\{16,\}'
+PATTERNS='taile[0-9a-f][0-9a-f]*|[a-z0-9][a-z0-9-]*\.ts\.net|(key|nonce)=[0-9a-zA-Z]\{16,\}'
 ZERO=0000000000000000000000000000000000000000
 
 fail=0

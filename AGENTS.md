@@ -33,7 +33,7 @@ An active `tailscale funnel` in front of `substrate serve` is protected by obscu
 grep -rniE 'taile[0-9a-f]+|[a-z0-9-]+\.ts\.net' --exclude-dir=target .
 
 # live capability keys (long hex after key=; recipe text like "key=…" is fine)
-grep -rnE '(key|fresh)=[0-9a-zA-Z]{16,}' --exclude-dir=target .
+grep -rnE '(key|nonce)=[0-9a-zA-Z]{16,}' --exclude-dir=target .
 ```
 
 Redact hits to `<ts-net-host>` / `key=<redacted>`. Thread transcripts are the likeliest leak path — participants paste serve URLs into entries — so run the scan over `.substrate/` and any `docs/threads/` exports too. Rotating the key (`substrate serve --key <new>`) after any suspected leak costs one line in Kagi's standing instructions.

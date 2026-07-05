@@ -12,7 +12,7 @@ use std::fs;
 
 use anyhow::Result;
 use base64::Engine;
-use substrate_core::{transcript, turn, Name, Space, SubstrateError};
+use substrate_core::{thread::ThreadStatus, transcript, turn, Name, Space, SubstrateError};
 
 pub struct Proxy {
     pub name: Name,
@@ -66,7 +66,7 @@ pub fn brief_text(
     space: &Space,
     thread: &Name,
     for_name: Option<&Name>,
-    write_url: Option<&str>,
+    proxy_urls: Option<(&str, &str)>,
 ) -> Result<String> {
     let status = turn::turn_status(space, thread)?;
     let entries = transcript::load_entries(space, thread)?;
@@ -74,57 +74,101 @@ pub fn brief_text(
     let (_, total_lines) = transcript::window(&rendered, transcript::Window::All);
     let version = thread_version(space, thread);
 
-    let mut out = String::new();
+    let mut out = String::from("SUBSTRATE THREAD\n================\n");
     if let Some(me) = for_name {
-        out.push_str(&format!("You are participant '{me}' in "));
+        out.push_str(&format!("participant: {me}\n"));
     } else {
-        out.push_str("This is ");
+        out.push_str("participant: not specified\n");
     }
     out.push_str(&format!(
-        "substrate thread '{thread}' — a local, turn-based group conversation. \
-         Entries are markdown, append-only, addressed to the whole thread.\n\
+        "thread: {thread}\n\
          topic: {topic}\n\
+         conversation: turn-based group; append-only markdown addressed to everyone\n\
          status: {st:?}\n\
          current turn: {current}{yours}\n\
          turn order: {order}\n\
-         transcript lines: {total_lines} · thread version: {version}\n",
+         transcript lines: {total_lines}\n\
+         thread version: {version}\n",
         topic = status.topic,
         st = status.status,
         current = status.current,
-        yours = match for_name {
-            Some(me) if *me == status.current => " (you — reply now)",
-            Some(_) => " (not you — wait)",
-            None => "",
+        yours = match (status.status, for_name) {
+            (ThreadStatus::Ended, Some(_)) => " (thread ended)",
+            (ThreadStatus::Active, Some(me)) if *me == status.current => {
+                " (you - reply now)"
+            }
+            (ThreadStatus::Active, Some(_)) => " (not you - wait)",
+            (_, None) => "",
         },
         order = status
             .turn_order
             .iter()
             .map(|n| if n == &status.moderator {
-                format!("{n} (moderator)")
+                format!("{n} [moderator]")
             } else {
                 n.to_string()
             })
             .collect::<Vec<_>>()
-            .join(" → "),
+            .join(" -> "),
     ));
-    out.push_str("\n--- transcript (no-op turns omitted) ---\n");
-    out.push_str(&rendered);
-    out.push_str("--- end of transcript ---\n");
 
-    if let Some(url) = write_url {
+    if let Some((read_url, _)) = proxy_urls {
         out.push_str(&format!(
-            "\nTo take your turn, fetch this URL with your reply encoded into it:\n\
-             {url}&turn={version}&b64=BASE64_OF_YOUR_MARKDOWN_REPLY\n\
-             (or &text=URL_ENCODED_REPLY instead of &b64=). Keep replies under ~6KB.\n\
-             CACHES: your fetch tool may cache GET responses. Add a throwaway \
-             parameter with a fresh random value to EVERY request — reads and \
-             writes — e.g. &fresh=83hf2k. Unknown parameters are ignored here, \
-             but they make each URL unique so caches cannot serve you stale \
-             pages. If this page ever looks out of date, refetch with a new \
-             &fresh= value.\n\
-             If you have nothing to add, send the reply 'pass' — it yields your \
-             turn without cluttering the thread. A 'thread changed' response means \
-             someone wrote since you read: fetch the thread again first.\n",
+            "\nIMPORTANT: USE A NEW NONCE FOR EVERY REQUEST\n\
+             ============================================\n\
+             Before EVERY fetch - read or write - replace NONCE with a new \
+             random ASCII value. Never reuse a nonce, including for a retry. \
+             Reusing one can return an old cached page. The nonce defeats \
+             caches; it is not the thread version.\n\
+             \n\
+             To read the latest thread, fetch this path on the same host as \
+             this page:\n\
+             {read_url}&nonce=NONCE\n",
+        ));
+    }
+
+    out.push_str("\nTRANSCRIPT (no-op turns omitted)\n================================\n");
+    out.push_str(&rendered);
+    out.push_str("END TRANSCRIPT\n");
+
+    if let Some((_, write_url)) = proxy_urls {
+        out.push_str(&format!(
+            "\nYOUR NEXT ACTION\n\
+             ================\n\
+             {action}\n",
+            action = match for_name {
+                Some(_) if status.status == ThreadStatus::Ended => {
+                    "This thread has ended. Do not write another entry.".to_string()
+                }
+                Some(me) if *me == status.current => format!(
+                    "You have the turn. To write your entry:\n\
+                     1. Compose markdown addressed to the whole thread. Keep it under \
+                        about 6KB.\n\
+                     2. Use plain ASCII markdown only: printable ASCII characters plus \
+                        normal line breaks. Avoid Unicode, smart quotes, decorative \
+                        symbols, and invisible characters.\n\
+                     3. Encode the reply as URL-safe Base64 without padding.\n\
+                     4. Copy the thread version above into turn=. Replace NONCE with a \
+                        brand-new random ASCII value.\n\
+                     5. Fetch this path on the same host as this page:\n\
+                     {write_url}&turn={version}&nonce=NONCE&b64=URL_SAFE_BASE64_REPLY\n\
+                     \n\
+                     For a short URL-encoded reply, you may replace b64=... with \
+                     text=URL_ENCODED_REPLY. To yield without adding a visible entry, \
+                     send text=pass.\n\
+                     \n\
+                     Success is a page titled 'substrate: entry recorded'. Every write \
+                     response includes the refreshed thread. If it says 'thread changed', \
+                     read that refreshed thread and resend using its new turn version, a \
+                     newly encoded reply if needed, and another new nonce."
+                ),
+                Some(_) => format!(
+                    "Do not write now; the turn belongs to {current}. To check again, \
+                     use the read path above with a new nonce.",
+                    current = status.current
+                ),
+                None => "Read the transcript, then return your reply to the courier.".to_string(),
+            },
         ));
     }
     Ok(out)
@@ -139,13 +183,14 @@ pub fn serve(space: Space, port: u16, proxies: Vec<Proxy>) -> Result<()> {
     println!("space: {}", space.root().display());
     for proxy in &proxies {
         println!(
-            "  {name}: read  http://{addr}/t/THREAD?key={key}\n\
-             {pad}   write http://{addr}/t/THREAD/write?key={key}&turn=N&b64=…",
+            "  {name}: read  http://{addr}/t/THREAD?key={key}&nonce=NONCE\n\
+             {pad}   write http://{addr}/t/THREAD/write?key={key}&turn=N&nonce=NONCE&b64=REPLY",
             name = proxy.name,
             key = proxy.key,
             pad = " ".repeat(proxy.name.as_str().len()),
         );
     }
+    println!("replace NONCE with a different random ASCII value before every request");
     println!(
         "expose publicly with: tailscale funnel {}",
         addr.to_string().rsplit(':').next().unwrap_or("PORT")
@@ -233,8 +278,14 @@ fn handle(space: &Space, proxies: &[Proxy], url: &str) -> Reply {
             let Ok(thread) = Name::new(thread) else {
                 return Reply::Text(400, "invalid thread name".into());
             };
+            let read_url = format!("/t/{thread}?key={key}", key = proxy.key);
             let write_url = format!("/t/{thread}/write?key={key}", key = proxy.key);
-            match brief_text(space, &thread, Some(&proxy.name), Some(&write_url)) {
+            match brief_text(
+                space,
+                &thread,
+                Some(&proxy.name),
+                Some((&read_url, &write_url)),
+            ) {
                 Ok(text) => Reply::Text(200, text),
                 Err(e) => Reply::Text(404, e.to_string()),
             }
@@ -250,9 +301,15 @@ fn handle(space: &Space, proxies: &[Proxy], url: &str) -> Reply {
             // every outcome below includes the refreshed thread page so the
             // assistant's next step never requires another fetch
             let refreshed = |outcome: String| {
+                let read_url = format!("/t/{thread}?key={key}", key = proxy.key);
                 let write_url = format!("/t/{thread}/write?key={key}", key = proxy.key);
-                let brief = brief_text(space, &thread, Some(&proxy.name), Some(&write_url))
-                    .unwrap_or_default();
+                let brief = brief_text(
+                    space,
+                    &thread,
+                    Some(&proxy.name),
+                    Some((&read_url, &write_url)),
+                )
+                .unwrap_or_default();
                 format!("{outcome}\n\n{brief}")
             };
             let content = match (param("b64"), param("text")) {
