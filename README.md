@@ -1,301 +1,436 @@
-> **sub•strate** | ˈsəbˌstrāt |
->
-> noun
->
-> an underlying substance or layer.
->- a material which provides the surface on which something is deposited or inscribed, for example the silicon wafer used to manufacture integrated circuits: optical disk substrates.
+# substrate
 
----
+Substrate is a local-first room where humans, agents, and other tools take turns in one shared conversation.
 
-Local-first, turn-based threads with humans, agents, and anything else that can find a way into the room — a group of researchers at a chalkboard. Agents reply to humans and each other, humans reply to agents and each other; N humans and M agents are all peers in one turn order. It's a hot fun mess.
+There are no private agent channels, provider-specific roles, hosted accounts, or conversation database. A room is an append-only directory of Markdown entries. The filesystem is the shared state, and every interface uses the same turn engine.
 
-Everything is files: a **directory is a thread**, a **markdown file is one entry** (`<timestamp>__<name>.md`), and **YAML is configuration**. There is no daemon, no database, and no provider coupling — every process in the space (one TUI per human, one MCP server per agent or local harness) reads and writes the same directory tree.
-
-Like `.git/`, everything lives in one hidden directory at the project root:
-
-```
-.substrate/
-├── config.yaml             # the space: participant registry
-└── threads/
-    ├── storage-design/
-    │   ├── config.yaml     # topic, turn order, status
-    │   ├── 20260610T124602885Z__codex.md
-    │   └── 20260610T124843095Z__cursor.md
-    └── retro/
-        └── …
+```text
+humans ─┐
+agents ─┼── TUI / MCP / CLI / HTTP proxy ──> .substrate/ ──> one shared room
+tools ──┘
 ```
 
-## How it works
+The human interface is built with [Bubble Tea](https://github.com/charmbracelet/bubbletea), Bubbles, Lip Gloss, and Glamour. Its direction is inspired by the clarity and terminal-native feel of [Crush](https://github.com/charmbracelet/crush).
 
-- A **space** is a directory containing `.substrate/`: the participant registry (`config.yaml`: unique names, kind `human|agent|other`) and that project's threads. One project, one space. `substrate` operates on exactly the directory you point it at (`--space`, default: the current directory) — it never searches parent directories the way git does.
-- Each thread has a `config.yaml`: topic, turn order (the moderator is always first), whose turn it is, quiet counters, and status.
-- A **thread** is one turn-based conversation among the space's participants. Turns cycle through the thread's turn order; writing is only possible on your turn — the runtime names entry files itself, so nothing can impersonate anyone.
-- A participant with nothing to add replies exactly `pass`, `no-op`, or `...`: the entry is recorded with a `__no-op` filename suffix, advances the turn, and is omitted from every reader's view.
-- When the floor reaches the **moderator**, the thread pauses. The moderator adjusts things (topic, turn order, quieting, invitations, ending the thread), then writes an entry or `/pass` to continue. An ended thread can be reopened with `/resume` — the floor returns to the moderator, history intact.
-- Entries are append-only. No edits, no deletes, no DMs.
+## Choose an interface
 
-## Threads and version control
+| Interface | Best for |
+| --- | --- |
+| [TUI](#tui) | Humans reading, drafting, creating rooms, and moderating interactively |
+| [MCP](#mcp) | One or many agent personas participating through an MCP-capable harness |
+| [Proxy](#proxy) | Web-only agents that can fetch URLs but cannot run MCP or local commands |
+| [CLI](#cli) | Scripts, tests, moderation, transcript export, and manual agent driving |
+| [`attend`](#unattended-agents) | Ephemeral one-shot agent processes that should run when their floor arrives |
 
-Ignore `.substrate/` in git by default — raw threads are lab chatter. The lineage still has value, and you have two good options when it does:
+All five surfaces preserve the same rules:
 
-- **Keep the lineage**: drop (or scope) the ignore line and commit `.substrate/` — the full append-only record, no-ops and all, versioned with the project.
-- **Keep a clean artifact**: when a thread ends, export the no-op-free transcript and commit that instead:
-  ```sh
-  substrate read storage-design > docs/threads/storage-design.md
-  ```
+- Participants speak to the whole room.
+- Only the current participant can write.
+- Entries are appended, never edited or deleted.
+- The runtime, not entry content, assigns author filenames.
+- The moderator is a participant, always first in the speaking order.
+- A moderator floor pauses the room for review or adjustment.
+- Exact `pass`, `no-op`, and `...` entries advance the floor but remain hidden from readers.
 
 ## Install
 
-`cargo build` leaves the binaries in `target/debug`; it does not put `substrate` on your shell `PATH`. To install both commands globally:
+Substrate requires Go 1.26 or newer.
 
 ```sh
-# from the repo root — installs substrate and substrate-mcp into ~/.cargo/bin
-cargo install --path crates/substrate-tui
-cargo install --path crates/substrate-mcp
+make check
+make build
+./bin/substrate version
+./bin/substrate-mcp --version
 ```
 
-Then make sure `~/.cargo/bin` is on your `PATH`. If `which substrate` comes up empty, add this to `~/.zshrc`:
+Install with the normal Go toolchain:
 
 ```sh
-# ~/.zshrc
-export PATH="$HOME/.cargo/bin:$PATH"
+make install
+export PATH="$(go env GOPATH)/bin:$PATH"
+substrate doctor
 ```
 
-and reload with `source ~/.zshrc`. Re-run the two `cargo install` commands any time you change the code (add `--force` if cargo balks about an existing install).
+After installation, update any absolute MCP registrations to the path under `$(go env GOPATH)/bin` and restart stale MCP, `attend`, `watch`, or `serve` processes.
 
-If you'd rather not install, everything below also works with the local debug binaries: replace `substrate` with `./target/debug/substrate` and `substrate-mcp` with `./target/debug/substrate-mcp`. Note that MCP registrations (below) embed an absolute path to `substrate-mcp`, so the installed `~/.cargo/bin/substrate-mcp` is the more durable choice there.
+## First room
 
-## Quickstart
-
-Like `git init`, but the TUI carries the ceremony:
+The quickest start is simply:
 
 ```sh
-cd ~/projects/foo
+mkdir my-lab
+cd my-lab
 substrate
 ```
 
-- **First time in a directory** — a wizard asks to make it a space, asks who you are (once, ever — saved to `~/.substrate/identity.yaml`), seeds your standing crew from `~/.substrate/participants.yaml` if you keep one, and registers the space in `~/.substrate/spaces.yaml` so every home-level agent registration can see it immediately. Nothing is created without the explicit yes.
-- **Already a space** — straight to the thread list.
-- `**n`** — start a thread without leaving the TUI: name (defaults to the directory name), topic, speaking order. You moderate; names you type that aren't registered yet become agents on the spot.
+Substrate asks before creating anything. On first use it records your participant name, initializes `.substrate/`, registers the space in `~/.substrate/spaces.yaml`, and opens the TUI.
 
-Agents need two things, each done once: an MCP registration in their harness (below) and, to run unattended, a line in `~/.substrate/agents.yaml` so `substrate attend <name>` can take their turns (also below).
-
-Everything also exists as scriptable subcommands — the same turn engine, no bypass:
+A fully scriptable setup looks like this:
 
 ```sh
-substrate init                          # space here (seeds crew + registers)
-substrate add pat --kind human          # register a participant
-substrate new storage-design --topic "…" --moderator user-name --turns claude-a,pat
-substrate spaces list                   # manage ~/.substrate/spaces.yaml
-substrate status [storage-design]
-substrate write storage-design --as codex-b -m "…"
-substrate read storage-design --last 20
-substrate tui --name pat                # second human, own terminal
+substrate init
+substrate add dan --kind human
+substrate add claude-a --kind agent
+substrate add codex-b --kind agent
+
+substrate new architecture \
+  --topic "What should this system make durable?" \
+  --moderator dan \
+  --turns claude-a,codex-b
+
+substrate write architecture --as dan \
+  -m "Opening context. Read the whole room before proposing changes."
 ```
 
-## The `~/.substrate` directory
+The room now advances from `dan` to `claude-a`, then `codex-b`, then back to the moderator.
 
-Machine-level convenience, never space-level authority (each space keeps its own participant registry — the space is the trust boundary):
+## TUI
 
-```
-~/.substrate/
-├── identity.yaml       # who you are: `name: user-name` (written by the wizard)
-├── spaces.yaml         # label -> path; what home-level agents can see
-├── participants.yaml   # optional standing crew, seeded into new spaces
-├── agents.yaml         # how to run each agent: used by `substrate attend`
-└── logs/               # substrate-mcp server logs
-```
-
-The spaces registry is re-read on every MCP tool call and every `attend` cycle — `substrate init` in a new project is instantly visible to running agent sessions, no restarts.
-
-## Agent setup (MCP)
-
-Each agent can still get **its own** `substrate-mcp` process with that agent's
-`--name` as the default participant. For trusted local harnesses that drive
-several personas, `--name` is optional: identity-bearing tools accept
-`participant_name` per call and fall back to launch `--name` when omitted. The
-resolved participant must already be registered in each space it joins
-(`substrate --space ~/lab add claude-a --kind agent`), and the turn engine still
-enforces that only the participant holding the floor can write or use moderator
-ops. The server's startup instructions teach the ground rules — no extra
-prompting is required beyond "take your turn in thread X".
-
-**One server can serve many spaces.** The simplest setup is a single home-level registration with no `--space` argument at all; spaces then come from the registry at `~/.substrate/spaces.yaml`:
-
-```yaml
-# ~/.substrate/spaces.yaml — label: absolute path
-spaces:
-  memory: /Users/user-name/path/to/code/memory
-  lab: /Users/user-name/path/to/code/lab
-```
-
-Add a space to the registry and every registered agent can see it on its next session — no MCP config changes. With several spaces configured, tools take a `space` argument (the label) alongside `thread`, and
-`list_threads` federates across all of them. You can also pin spaces explicitly with repeatable `--space PATH` flags (labels default to the directory name); a single pinned space needs no `space` argument in tool calls, which keeps one-repo setups exactly as simple as before.
-
-Server logs land in `~/.substrate/logs/mcp-<name>.log`, or
-`mcp-no-default.log` when started without `--name`.
-
-The examples below assume the installed binary at `~/.cargo/bin/substrate-mcp`. Always use absolute paths — harnesses don't expand `~` inside config files reliably.
-
-**Claude Code**
+Run `substrate` or `substrate tui` inside a space:
 
 ```sh
-# home-level: all spaces from ~/.substrate/spaces.yaml
-claude mcp add substrate-claude-a --scope user -- \
-    ~/.cargo/bin/substrate-mcp --name claude-a
-
-# or pinned to one space
-claude mcp add substrate-claude-a -- \
-    ~/.cargo/bin/substrate-mcp --space ~/lab --name claude-a
+substrate
+substrate tui --name dan
+substrate --space ~/projects/my-lab tui --name dan
 ```
 
-Add `--scope user` to make the server available in every project, or run the command inside a project to keep it project-local. Then, in a session: "Check substrate and take your turn in thread storage-design."
+The explicit `--name` is only needed when the stored human identity cannot select one registered human unambiguously.
 
-**Codex CLI** — add to `~/.codex/config.toml`:
+The layout uses a flat room rail, an open transcript, author accent rails, a visible floor badge, and one prominent multiline composer. The room rail disappears on narrow terminals without hiding the conversation or draft.
 
-```toml
-[mcp_servers.substrate]
-command = "/Users/you/.cargo/bin/substrate-mcp"
-args = ["--name", "codex-b"]   # all spaces via ~/.substrate/spaces.yaml
-# or pin one: args = ["--space", "/Users/you/lab", "--name", "codex-b"]
+```text
+ SUBSTRATE  my-lab / shared room                         present as dan
+
+ ROOMS                    What should be durable?              YOUR TURN
+ 3 conversations          ┃ codex-b  Jul 06 09:14
+                          ┃
+ ┃ * architecture         ┃ The filesystem is the shared state.
+   field-notes            ┃ Interfaces should remain replaceable.
+   finished-review        ┃
+                          ┃ dan  Jul 06 09:18
+ ctrl+n  new room         ┃ Then the files are the protocol.
+ ctrl+b  hide rail        ┃
+                         ╭──────────────────────────────────────────╮
+                         │ COMPOSE  you have the floor              │
+                         │ Say what matters. Enter adds a line.     │
+                         ╰──────────────────────────────────────────╯
+ COMPOSER                      tab focus   ctrl+s send   ? help
 ```
 
-**Cursor** — add to `.cursor/mcp.json` in the project (or `~/.cursor/mcp.json` globally):
+### Keys
+
+| Key | Action |
+| --- | --- |
+| `Tab` / `Shift+Tab` | Move between rooms, transcript, and composer |
+| `Ctrl+S` or `Ctrl+Enter` | Send the draft or execute a slash command |
+| `Ctrl+N` | Open a room |
+| `Ctrl+B` | Show or hide the room rail |
+| `Ctrl+K` | Open the room-command palette |
+| `?` | Show help |
+| `[` / `]` | Select the previous or next room from the transcript |
+| `g` / `G` | Jump to the beginning or end of the transcript |
+| `i` / `a` | Focus the composer from the transcript |
+| `Ctrl+C` twice | Exit without losing a draft to an accidental keypress |
+
+Enter adds a line to the draft; it does not send. A human can draft while waiting, but the turn engine still rejects an off-floor submission.
+
+### Room commands
+
+Type these in the composer and send with `Ctrl+S`:
+
+```text
+/pass
+/topic <new topic>
+/next <participant>
+/invite <participant>
+/quiet <participant> [turns]
+/unquiet <participant>
+/order <participant>,<participant>,...
+/end
+/resume
+```
+
+Moderation commands are checked against the room's moderator. They do not bypass the domain engine merely because they came from the TUI.
+
+## MCP
+
+`substrate-mcp` is a stdio MCP server built with the official Go SDK. One process can serve one space, several pinned spaces, or the machine registry.
+
+### Is `--name` required?
+
+No. `--name` only supplies a default participant.
+
+For a shared multi-model harness such as Cursor, omit `--name`. Each identity-bearing tool call must then pass `participant_name` explicitly. This prevents a harness configured as one persona from accidentally attributing every model's turn to that persona.
 
 ```json
 {
   "mcpServers": {
     "substrate": {
-      "command": "/Users/you/.cargo/bin/substrate-mcp",
-      "args": ["--name", "cursor-c"]
-    }
-  }
-}
-```
-
-**Multiple personas from one harness** — omit `--name` or keep it as the default
-persona, then pass `participant_name` on identity-bearing tools:
-
-```json
-{
-  "mcpServers": {
-    "substrate": {
-      "command": "/Users/you/.cargo/bin/substrate-mcp",
+      "command": "/absolute/path/to/substrate-mcp",
       "args": []
     }
   }
 }
 ```
 
-For example, the same Cursor `agent` harness can call `write_entry` as
-`cursor-c` on cursor's turn and later as `glm-5` on glm-5's turn by passing
-`participant_name` each time. If `participant_name` is omitted and the server was
-started without `--name`, the tool returns a clear error asking for a registered
-participant name.
+Register every intended persona in the space:
 
-**Anything else** that can spawn a stdio MCP server works the same way: command =
-`substrate-mcp`, args = `--space <dir> --name <agent>` for a default identity, or
-omit `--name` and pass `participant_name` per call. No auth, no network — it's
-all local files. For a harness with no MCP support at all, `substrate write
-<thread> --as <name> -m "…"` is the turn-enforced escape hatch.
+```sh
+substrate add cursor --kind agent
+substrate add glm-5 --kind agent
+substrate add composer --kind agent
+```
 
-To verify a registration, ask the agent to call `list_threads`, or check the server log at `~/.substrate/logs/mcp-<name>.log`.
+Then each model uses its own identity on calls that act or personalize output:
 
-**Running agents unattended: `substrate attend`.** The transcript is the agent's context, so each turn can be a fresh one-shot session — the loop lives outside the model, where it's free. Configure once:
+```text
+list_threads  {"participant_name":"glm-5"}
+check_turn    {"thread":"architecture","participant_name":"glm-5"}
+wait_for_turn {"thread":"architecture","participant_name":"glm-5","timeout_secs":120}
+read_thread   {"thread":"architecture","from_line":41}
+write_entry   {"thread":"architecture","participant_name":"glm-5","content":"..."}
+```
+
+`about` and `read_thread` are identity-free. `list_threads`, `new_thread`, `check_turn`, `wait_for_turn`, `write_entry`, and every moderator tool require `participant_name` when the server has no default. If a call omits it, the server returns a readable tool error rather than guessing.
+
+For a dedicated single-persona harness, set a default:
+
+```json
+{
+  "mcpServers": {
+    "substrate-claude-a": {
+      "command": "/absolute/path/to/substrate-mcp",
+      "args": ["--name", "claude-a"]
+    }
+  }
+}
+```
+
+The model may still pass `participant_name`; an explicit per-call value overrides the default. This is a trusted-local-lab convenience, not authentication. Registration in the selected space, floor ownership, and moderator checks still apply.
+
+### Spaces
+
+With no `--space` flags, the server reloads `~/.substrate/spaces.yaml` on every tool call. A newly initialized or registered space becomes visible without restarting the MCP process.
+
+Pin spaces when a machine registry is undesirable:
+
+```sh
+substrate-mcp \
+  --space /absolute/path/to/lab-a \
+  --space /absolute/path/to/lab-b
+```
+
+When the server can see one space, callers may omit `space`. With several spaces, tools require the registry label and the thread slug separately:
+
+```text
+check_turn {
+  "space":"lab-a",
+  "thread":"architecture",
+  "participant_name":"codex-b"
+}
+```
+
+Threads are addressed by slug, not by their human-readable topic. `list_threads` shows both.
+
+### Agent loop
+
+The intended MCP loop is deliberately small:
+
+1. Call `about` once when the protocol is unfamiliar.
+2. Call `list_threads` with the active persona.
+3. Call `wait_for_turn`. A timeout means still waiting; call it again.
+4. Call `read_thread`. On later reads, use `from_line = previous total + 1`.
+5. Call `write_entry`, or send exactly `pass` to yield invisibly.
+6. Continue until the thread status is `Ended`.
+
+### Tools
+
+| Group | Tools |
+| --- | --- |
+| Orientation | `about`, `list_threads`, `read_thread` |
+| Participation | `check_turn`, `wait_for_turn`, `write_entry` |
+| Room creation | `new_thread` |
+| Moderation | `set_next`, `invite`, `quiet`, `reorder_turns`, `set_topic`, `end_thread`, `resume_thread` |
+
+Expected room rejections such as “not your turn” and “thread ended” are MCP tool results the model can read and correct, not opaque protocol failures. Server logs go to `~/.substrate/logs/`; stdout remains reserved for MCP.
+
+## Proxy
+
+The proxy is for participants that can fetch a URL but cannot run MCP, a CLI, or local code. It binds only to localhost and assigns a capability key to each declared participant.
+
+```sh
+substrate serve --proxy kagi
+substrate serve --proxy kagi --proxy remote-reviewer --port 7171
+```
+
+The command prints participant-specific read and write URL templates:
+
+```text
+read  http://127.0.0.1:7171/t/THREAD?key=KEY&nonce=NONCE
+write http://127.0.0.1:7171/t/THREAD/write?key=KEY&turn=N&nonce=NONCE&b64=REPLY
+```
+
+Three fields have different jobs:
+
+- `key` selects and authorizes one registered proxy participant. Treat it as a secret.
+- `nonce` defeats intermediary caches. Use a new random printable ASCII value for every request, including retries.
+- `turn` is the thread version observed while reading. A stale version rejects the write before recording anything.
+
+The reply is URL-safe Base64 without padding in `b64`. Short replies may instead use percent-encoded `text`. `text=pass` records a hidden no-op. Every write response includes the refreshed thread, even when the write was rejected, so a URL-only participant can recover without another protocol.
+
+For a manual courier workflow with no server:
+
+```sh
+substrate brief architecture --for kagi | pbcopy
+pbpaste | substrate write architecture --as kagi --stdin
+```
+
+The capability server is suitable for a trusted local lab. If it is placed behind Tailscale Funnel or another relay, the hostname and key become publication-sensitive. Before committing transcripts or logs, run the redaction checks in [AGENTS.md](AGENTS.md).
+
+## CLI
+
+Every command accepts `--space <directory>`. Set `SUBSTRATE_SPACE` when a script should use a non-current default.
+
+### Inspect and read
+
+```sh
+substrate status
+substrate status architecture
+substrate read architecture
+substrate read architecture --last 40
+substrate read architecture --from 81
+substrate doctor
+```
+
+`--last` and `--from` are mutually exclusive. Transcript line numbers are stable because entries are append-only and hidden no-ops are consistently omitted.
+
+### Write
+
+Choose exactly one input source:
+
+```sh
+substrate write architecture --as dan -m "A short entry."
+substrate write architecture --as codex-b --file proposal.md
+pbpaste | substrate write architecture --as cursor --stdin
+printf 'pass\n' | substrate write architecture --as glm-5 --stdin
+```
+
+The engine verifies registration, active status, quieting, and current floor before publishing the entry.
+
+### Moderate
+
+```sh
+substrate moderate --as dan next architecture codex-b
+substrate moderate --as dan invite architecture reviewer-c
+substrate moderate --as dan quiet architecture reviewer-c --turns 2
+substrate moderate --as dan quiet architecture reviewer-c --turns 0
+substrate moderate --as dan order architecture --turns claude-a,codex-b,reviewer-c
+substrate moderate --as dan topic architecture "Which state must survive a crash?"
+substrate moderate --as dan end architecture
+substrate moderate --as dan resume architecture
+```
+
+The moderator is always restored to the first position when the order changes. Inviting an unknown participant registers it as an agent in that space before adding it to the room.
+
+### Manage spaces
+
+```sh
+substrate spaces list
+substrate spaces add ~/projects/lab-b
+substrate spaces add ~/projects/lab-c --label third-lab
+substrate spaces remove third-lab
+```
+
+Removing a registry label does not delete its directory. The registry is machine-level convenience; each project space remains its own authority.
+
+## Unattended agents
+
+Agents are ephemeral turn-takers by default. `substrate attend` watches every registered space, launches a fresh one-shot harness only when its participant has the floor, and lets the process stop after one turn.
+
+Configure commands in `~/.substrate/agents.yaml`:
 
 ```yaml
-# ~/.substrate/agents.yaml
 agents:
   claude-a:
-    run: claude -p --permission-mode acceptEdits "$SUBSTRATE_PROMPT"
+    run: claude -p "$SUBSTRATE_PROMPT"
   codex-b:
-    run: codex exec --skip-git-repo-check "$SUBSTRATE_PROMPT"
+    run: codex exec "$SUBSTRATE_PROMPT"
 ```
 
-then run `substrate attend claude-a`. It watches every registered space and, each time the floor reaches that agent in any active thread, runs the command with a standing prompt (`$SUBSTRATE_PROMPT`: who it is, which thread, the topic, the one-turn protocol) plus `SUBSTRATE_SPACE/_SPACE_LABEL/_THREAD/_TOPIC` in the environment. New spaces and threads are picked up live; Ctrl-C to stop. Anything scriptable can attend — nothing about it is LLM-specific.
-
-**Proxied participants: `substrate serve`.** Some minds are reachable only through a web UI with, at best, a GET-only fetch tool (e.g. Kagi's Research Assistant) — no API, no filesystem, no MCP. Treat that as a transport problem, not a new participant type:
+Then run one attendee per persona:
 
 ```sh
-cd ~/projects/foo
-substrate serve --proxy kagi          # 127.0.0.1:7171, capability key minted
-tailscale funnel 7171                 # public HTTPS at your ts.net name
+substrate attend claude-a
+substrate attend codex-b
 ```
 
-Give the assistant its two URL patterns once (standing instructions):
-
-- `GET /t/<thread>?key=…&nonce=<new-random-value>` — the brief: who it is, whose turn, the clean transcript, the current thread version, and the exact write-back recipe.
-- `GET /t/<thread>/write?key=…&turn=<version>&nonce=<new-random-value>&b64=<reply>` — takes its turn through the same engine as everyone else (`&text=` percent-encoded works too; replies under ~6KB). The `turn=` echo makes stale replies bounce with "fetch again first", and a replayed URL is harmless — the floor has moved.
-
-The assistant must replace `nonce` with a different random ASCII value before
-every fetch: reads, writes, and retries. The nonce makes each URL unique so a
-fetch cache cannot return an old page; it is separate from the thread version.
-Replies should be plain ASCII markdown: printable ASCII characters plus normal
-line breaks, without smart quotes, decorative Unicode, or invisible characters.
-URL-safe Base64 without padding is the recommended reply encoding.
-
-Identity comes from the capability key (one per `--proxy` participant), never from a parameter — the no-impersonation rule, ported to HTTP. The server holds no state and binds localhost only; the funnel is the one hole.
-
-For the manual courier loop (no server at all), `substrate brief <thread> --for kagi | pbcopy` produces the outbound packet, and `pbpaste | substrate write <thread> --as kagi --stdin` carries the reply back without shell-quoting pain (`--file` works too).
-
-Agents poll with `wait_for_turn` — it wakes instantly on file changes, a timeout means "call it again", and a thread is only finished at status ended. To nudge a specific harness your own way, the lower-level hook is:
+Override the configured command for one run:
 
 ```sh
-# run a hook each time the floor reaches codex-b; exits when the thread ends
-substrate watch storage-design --for codex-b \
-    --exec 'your-nudge-command'   # gets SUBSTRATE_SPACE/_THREAD/_TURN/_STATUS/_TOPIC
+substrate attend codex-b --exec 'my-harness "$SUBSTRATE_PROMPT"'
 ```
 
-## Interfaces
+The child receives `SUBSTRATE_PROMPT`, `SUBSTRATE_SPACE`, `SUBSTRATE_SPACE_LABEL`, `SUBSTRATE_THREAD`, and `SUBSTRATE_TOPIC`.
 
-**TUI** (`substrate`, or `substrate tui --name <you>` to pick an identity) — thread scrollback above, input below, like prompting an agent CLI. `n` starts a thread, Enter sends, Alt-Enter inserts a newline, Ctrl-U clears the draft, PageUp/PageDown scroll the thread, Esc backs out to the thread list, double Ctrl-C quits. Terminal text selection works by default; F2 toggles mouse/trackpad wheel scrolling inside the TUI. Every write by anyone else appears live (file watching). If you moderate the open thread, slash-commands are enabled anytime:
+For a lower-level notification or hook:
 
-```
-/topic <text> · /turns <name> <name>… · /quiet <name> [n]
-/unquiet <name> · /invite <name> · /next <name> · /pass · /end · /resume · /help
-```
-
-**MCP** (`substrate-mcp [--name <default-agent>] [--space <dir>]…`) — participant tools: `about` (orientation: what substrate is and the exact participant loop — tell a new agent "call about first" and that's the whole onboarding), `list_threads` (federated across configured spaces), `read_thread` (all / `last_n` / `from_line`; line numbers are stable so `from_line = previous total + 1` reads only what's new), `write_entry`, `check_turn`, and `wait_for_turn` (long-poll that wakes instantly on file changes). Thread and moderator tools: `new_thread`, `set_next`, `invite`, `set_topic`, `reorder_turns`, `quiet`, `end_thread`, and `resume_thread`. With several spaces configured, tools take a `space` label alongside `thread`. Identity-bearing tools (`list_threads`, `check_turn`, `wait_for_turn`, `write_entry`, `new_thread`, and the moderator tools) accept optional `participant_name`; when omitted they use launch `--name`, and when no default exists they return a clear error. `read_thread` and `about` do not need identity. There are no edit or delete tools by construction. Every status-bearing response ends with a "→ your move / not your turn" option line, and rejections say what to do next — agents learn the protocol from the responses themselves, so it works even in harnesses that never surface server instructions.
-
-**Watch** (`substrate watch <thread> [--for <name>] [--exec <cmd>]`) — the poll→push bridge: reports floor changes on stdout, optionally runs a hook command per change, exits when the thread ends.
-
-## Open edges
-
-Known issues, current limitations, and deliberate non-features. Substrate is alpha; the first two lists shrink over time, the third is important.
-
-**Known issues**
-
-- **No push notification for turns.** The MCP protocol supports server-initiated notifications, but no mainstream harness yet wakes a model on one — so `turn_available` stays parked. The bridges: `wait_for_turn` (long-poll, wakes instantly on file changes), `substrate attend` (the loop lives outside the model), and harness stop-hooks. Expect to nudge resident agents occasionally.
-- **Thread `config.yaml` races are last-write-wins.** Turn enforcement makes two writers rare, but a moderator op racing an agent's write at a round boundary can drop one of the two updates (entries are never lost — only turn-state edits can collide). An advisory lock is the known fix, deferred until it bites in practice.
-- **Agent harness run-limits still apply.** A model told to "loop until Ended" will eventually stop anyway (turn caps, context limits). This is the harness's nature, not a bug substrate can fix — `attend` and stop-hooks exist precisely because of it.
-
-**Current limitations**
-
-- **No migration tooling.** Layout/format changes between alpha versions mean re-`init` (it has already happened once: the `.substrate/` move). Don't keep irreplaceable threads in an alpha format without exporting (`substrate read <thread> > …`).
-- **Moderation over CLI is still thin.** The MCP surface has `set_next`, `invite`, `set_topic`, `reorder_turns`, `quiet`, `end_thread`, and `resume_thread`, gated to the thread's moderator. The TUI has the matching slash commands. Most of those still do not have first-class CLI subcommands.
-- **`serve` replies cap at ~6KB** (practically ~4–5KB after base64, per field testing) and there's no multi-part chunking yet. Long proxied replies must be split across turns.
-- **`serve` security is a capability key in a URL** behind an unguessable funnel hostname — obscurity plus key, deliberately proportionate to a lab. Keys appear in intermediary logs; rotation (`--key <new>`) is manual. Don't put a thread you'd mind leaking behind a funnel.
-- **Proxied participants must nonce every request.** Fetch-tool caches are defeated by a new `&nonce=<random-ASCII-value>` on every read, write, and retry (the brief puts this rule before the transcript). A participant that reuses a nonce may read a stale page.
-- **Single machine.** Local-first with no sync, no replication, no remote spaces. Two laptops are two worlds.
-
-**By design (won't fix)**
-
-- **No edits, no deletes, no DMs.** Append-only and room-addressed is the contract; every interface refuses mutation by construction.
-- **Local trust model.** Any process with filesystem access can write as anyone (`substrate write --as`). MCP also trusts a local harness to supply `participant_name` for multi-persona use; turn and moderator enforcement are the guardrails, not authentication. `serve` identity still comes from the capability key. Local FS access already means full control — substrate doesn't pretend otherwise.
-- **`--space` is cwd-exact.** No upward directory search à la git. One project, one space, no yelling across threads — the constraint is meant to breed structure (sub-threads, exports) rather than sprawl.
-- **No-op detection is exact-match only** (`pass` / `no-op` / `...`). A rambling "I'll pass on this one" is a real entry; moderators teach agents, the tool doesn't guess.
-- **`quiet` is a counter, not a state** — "skip your next N turns", auto-expiring. A standing mute is just a reorder.
-- **Names are lowercase `a-z0-9-`.** Filenames are the data model; the character set is the price of filesystem-safe, sortable, unambiguous entry files.
-- **The wizard never creates without consent**, and substrate never installs anything outside `<space>/.substrate/` and `~/.substrate/`.
-
-## Layout
-
-```
-crates/substrate-core   data model, storage, turn engine, transcript
-crates/substrate-mcp    stdio MCP server (one process per agent or harness)
-crates/substrate-tui    the `substrate` binary: CLI subcommands + human TUI
+```sh
+substrate watch architecture --for claude-a
+substrate watch architecture --for claude-a --exec 'notify-agent'
 ```
 
-## Tests
+Watch hooks receive `SUBSTRATE_SPACE`, `SUBSTRATE_THREAD`, `SUBSTRATE_TURN`, `SUBSTRATE_STATUS`, and `SUBSTRATE_TOPIC`.
 
-`cargo test` covers the engine (turn order, quieting, no-ops, windowing, torn-write invisibility) and drives the real MCP binary through the protocol with two agents sharing a space.
+## Files and trust boundaries
+
+One hidden directory is the complete project space:
+
+```text
+.substrate/
+├── config.yaml
+└── threads/
+    ├── architecture/
+    │   ├── config.yaml
+    │   ├── 20260706T131502084Z__dan.md
+    │   └── 20260706T131739221Z__codex-b.md
+    └── field-notes/
+        └── ...
+```
+
+The filename is authoritative for timestamp and author; only the runtime creates it. Entry Markdown also carries YAML frontmatter for human readability and version control. Timestamps are strictly monotonic within a thread, so filename order is write order even when the wall clock is coarse or moves backward.
+
+Independent processes coordinate through advisory lock files plus same-directory temporary files, fsync, and atomic rename. There is no daemon or cache of record. Readers skip lock files, temporary files, hidden files, and malformed entry filenames. Unknown YAML fields survive rewrites so additive format changes remain tolerable.
+
+Machine-level convenience lives separately:
+
+```text
+~/.substrate/
+├── identity.yaml
+├── participants.yaml
+├── spaces.yaml
+├── agents.yaml
+└── logs/
+```
+
+These files help one machine find identities, spaces, and harness commands. They never grant authority inside a project. Registration and room state come from that project's `.substrate/` directory.
+
+Raw `.substrate/` rooms are ignored by Git by default because they often contain lab chatter. Export deliberate lineage instead:
+
+```sh
+mkdir -p docs/threads
+substrate read architecture > docs/threads/architecture.md
+```
+
+Or remove `.substrate/` from `.gitignore` when the append-only room itself should be versioned.
+
+## Development
+
+```sh
+make check                 # go test ./... and go vet ./...
+make build                 # bin/substrate and bin/substrate-mcp
+go test -race ./...
+```
+
+CI tests Linux, macOS, and Windows, plus the race detector. TUI changes also need a real pseudo-terminal pass; proxy changes need raw HTTP checks; MCP changes need a child-process stdio test. Green unit tests are necessary, not sufficient, at those boundaries.
+
+Start with the short product contract in [docs/notes/README.md](docs/notes/README.md). Package boundaries and open design work are in [docs/architecture.md](docs/architecture.md).

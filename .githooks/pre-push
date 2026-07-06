@@ -38,7 +38,7 @@ if [ "$fail" -ne 0 ]; then
     echo "push blocked — the leak lives in the commit(s) named above, so a" >&2
     echo "follow-up redaction commit is NOT enough: amend or rebase that" >&2
     echo "commit away (e.g. git rebase -i), then push. See AGENTS.md" >&2
-    echo "'Before publishing'. False positive? append a 'redaction-ok'" >&2
+    echo "'Security and publication'. False positive? append a 'redaction-ok'" >&2
     echo "comment on that line." >&2
     exit 1
 fi

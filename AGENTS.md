@@ -1,55 +1,229 @@
-# Notes for agents working on this repo
+# AGENTS.md
 
-The spec is [docs/notes/README.md](docs/notes/README.md). Read it before changing behavior — it is short and every line is important.
+Operating contract for agents working in this repository.
 
-## Orientation for a new session
+## Working stance
 
-- **Layout**: `crates/substrate-core` (data model, storage, turn engine, transcript) · `crates/substrate-mcp` (stdio MCP server, one process per agent/harness) · `crates/substrate-tui` (the `substrate` binary: CLI subcommands + human TUI + `serve`/`attend`/`watch`).
-- **This repo is itself a substrate space.** `.substrate/` here holds live threads, and the dev agent (`claude`) is a registered participant — you may be asked to "take your turn in thread X". Use the substrate MCP tools; call `about` first if they're new to you. The room's findings often become this repo's fixes, sometimes within the same rotation.
-- **Code changes reach nobody until reinstalled.** Live sessions (TUIs, MCP servers, `attend` loops, other projects) run `~/.cargo/bin/substrate{,-mcp}`, not `target/debug`. After a change passes the gate: `cargo install --path crates/substrate-tui --force` and `--path crates/substrate-mcp --force`. Running MCP servers pick the new binary up on their next harness respawn — expect a lag, and don't mistake a stale server for a failed fix (we've burned time on that twice).
-- **These binaries are live infrastructure now.** Other projects' spaces and `~/.substrate` (identity, space registry, agents.yaml) depend on the current on-disk formats. Still alpha — breaking changes are allowed — but they now break *neighbors*, not just this garage: say so loudly in the change description, and prefer formats that tolerate unknown fields.
-- **Tests passing is necessary, not sufficient.** The bugs that mattered here were caught by *live* verification after green suites: the orphaned-TUI core burn (scripted pty session), the librarian-unparseable write responses (raw HTTP GETs). For TUI behavior drive a real pty; for `serve` speak raw HTTP; for MCP use the child-process integration tests as the template.
+- Reality revises every plan.
+- Intellectual humility means noticing where your view may be incomplete.
+- Slow is smooth, and smooth is fast.
+- Use “important” for critical dependencies and decisions.
+- Do not use emojis.
 
-## Design invariants (do not break)
+Inspect before changing. Prefer evidence from code, tests, files, and live boundaries over confident summaries. Preserve unrelated work in a dirty tree.
 
-- **Group-first.** N humans + M agents are peers in one room. Any feature must hold for multiple humans AND multiple mixed-provider agents at once. No one-to-one routing, no DMs, no provider coupling anywhere.
-- **The filesystem is the shared state.** Concurrent processes (TUIs, MCP servers, scripts) coordinate only through the space directory. No daemon, no cache of record. Every operation re-reads from disk.
-- **Append-only.** Entries are never edited or deleted. No interface may grow a mutation tool.
-- **The runtime names files.** Author identity comes from the filename, which only the runtime writes. MCP resolves identity from a per-call `participant_name`, falling back to launch `--name`; this is a trusted-local-lab relaxation for multi-persona harnesses. Nothing in thread content may influence identity, and the turn engine still enforces that the resolved participant may only act on their own turn or moderator role.
-- **Spaces are the trust boundary.** One `substrate-mcp` may serve many spaces (`crates/substrate-mcp/src/spaces.rs`), but names are registered per-space, identity is verified against each space's own registry, and writes always name their space explicitly when more than one is configured — never an ambient "current space". `~/.substrate` (`substrate-core/src/home.rs`) is machine-level *convenience* (identity, space registry, crew template, agent commands), never space-level authority. A space's own data lives in `<project>/.substrate/` (config.yaml + threads/), git-ignored by default — lineage is opt-in via .gitignore or `substrate read <thread> > docs/…`.
-- **The set of spaces is filesystem-truth too.** The MCP server and `substrate attend` re-read `~/.substrate/spaces.yaml` on every call/cycle; never cache it across calls. A `substrate init` anywhere must be visible to running sessions without restarts.
-- **The wizard never creates without consent.** `substrate` in a non-space directory asks before writing anything; typo-running it must stay harmless.
-- **Agents are ephemeral turn-takers by default** (`substrate attend`): the transcript is the context, the loop lives outside the model. Don't design features that assume a long-lived agent session.
-- **Entry timestamps are strictly monotonic per thread** (`turn::next_timestamp`) so lexicographic filename order == write order. Don't replace this with bare wall-clock naming.
-- **No-op turns** (`pass` / `no-op` / `...`, exact match) are recorded on disk but skipped by all readers.
-- **Moderator pause is derived**, never stored: the room is paused iff `turn_order[next_index] == moderator`. The moderator is always first in `turn_order`.
+## Read order
 
-## Before publishing / committing docs and transcripts
+Before changing behavior, read:
 
-An active `tailscale funnel` in front of `substrate serve` is protected by obscurity (an unguessable hostname) plus a capability key. That's acceptable for the lab — **as long as the repo never broadcasts either**. Before making the repo public, committing exported thread transcripts, or pasting logs into docs/notes, scan and redact:
+1. [docs/notes/README.md](docs/notes/README.md) — short product contract; every line is important.
+2. [README.md](README.md) — current user-facing behavior and examples.
+3. [docs/architecture.md](docs/architecture.md) — package boundaries, concurrency, and open decisions.
+4. The implementation and tests for the surface being changed.
+
+Room transcripts, decision records, and historical notes are evidence and lineage, not automatically the current specification.
+
+## Repository map
+
+| Path | Responsibility |
+| --- | --- |
+| `internal/substrate` | Names, spaces, YAML, atomic storage, entries, transcripts, turn engine, moderation, machine registry |
+| `internal/ui` | Bubble Tea TUI, Bubbles components, Lip Gloss layout, Glamour rendering |
+| `internal/mcpserver` | Official Go MCP SDK tools, identity resolution, multi-space routing, waits |
+| `internal/proxy` | Capability-key HTTP transport and courier briefs |
+| `internal/watcher` | Floor watches and ephemeral `attend` processes |
+| `internal/cli` | Cobra commands, first-run consent, interface wiring, diagnostics |
+| `cmd/substrate` | Human CLI and TUI executable |
+| `cmd/substrate-mcp` | Stdio MCP executable; stdout is protocol-only |
+
+Dependencies point inward. Interfaces call `internal/substrate`; the domain package must not import TUI, MCP, CLI, or HTTP code.
+
+## Non-negotiable invariants
+
+### Group-first
+
+N humans and M agents are peers in one room and one speaking order. Features must work for multiple humans, multiple agents, and mixed providers. Do not add direct messages, one-to-one routing, provider coupling, or an assumed human-agent pair.
+
+### Filesystem truth
+
+The filesystem is the shared state. Independent TUIs, MCP servers, CLIs, proxies, and watchers coordinate through the space directory. There is no daemon or cache of record. A filesystem notification is only a wakeup; reread the files before deciding.
+
+The machine space registry is filesystem truth too. MCP reloads `~/.substrate/spaces.yaml` on every call, and `attend` reloads it every cycle. Never cache the set of spaces across calls.
+
+### Append-only history
+
+Entries are never edited or deleted. No interface may grow a mutation tool. Exact `pass`, `no-op`, and `...` turns are recorded with `__no-op`, advance the floor, and are omitted by every reader.
+
+### Runtime-owned identity
+
+Only the runtime creates entry filenames. Filename author and timestamp are authoritative; thread content cannot choose or alter identity.
+
+MCP `participant_name` is a trusted-local-lab convenience for shared multi-model harnesses. The resolved participant must be registered in the selected space and may act only on their own floor or in their moderator role.
+
+### Spaces are trust boundaries
+
+Registration is per space. `~/.substrate` provides machine-level identity, discovery, crew templates, harness commands, and logs; it grants no authority inside a project. When MCP serves several spaces, writes must name the space explicitly. Never invent an ambient current space.
+
+### Turn semantics
+
+- The moderator is always first in `turn_order`.
+- Pause is derived: an active room is paused exactly when the moderator holds the floor.
+- Entry timestamps are strictly monotonic per thread, so filename order is write order.
+- Agents are ephemeral turn-takers by default; the transcript is context and the loop lives outside the model.
+- Running `substrate` outside a space must ask before creating anything.
+
+## Storage and concurrency
+
+Every stateful operation rereads the relevant YAML. Writers use an in-process mutex, an advisory filesystem lock, a same-directory dotfile temporary file, file sync, and atomic rename. Readers skip dotfiles and non-entry filenames.
+
+Preserve unknown YAML fields through inline maps. Additive format evolution must not cause older writers to erase newer metadata.
+
+Publishing an entry and advancing the thread config still spans two files. Treat this as a known crash boundary. Do not hide it with in-memory state, edit history during recovery, or casually add a database. A future recovery design should remain append-only and human-readable.
+
+The version-1 file format is live infrastructure used by neighboring projects. Breaking changes are allowed while alpha, but they must be explicit, documented, and tested against compatibility fixtures.
+
+## Interface rules
+
+### TUI
+
+- Use Bubble Tea’s `Init` / `Update` / `View` model.
+- Keep `View` deterministic and free of filesystem I/O.
+- Treat watchers as wakeups and reload from disk.
+- Route mutations through `internal/substrate`; UI state is never authoritative.
+- Keep keyboard-only use complete and narrow terminals functional.
+- Preserve the new Charm direction: flat room rail, open conversation canvas, message accent rails, visible floor state, and one prominent composer.
+- Do not regress to a uniform panel grid or make every region a bordered box.
+
+Every TUI change needs a real pseudo-terminal pass in addition to unit tests. Exercise resize, focus, scrolling, multiline drafts, submission, and clean exit when relevant.
+
+### MCP
+
+- Use the official `github.com/modelcontextprotocol/go-sdk/mcp` typed `AddTool` API.
+- `--name` is optional and only supplies a default participant.
+- Shared multi-model harnesses should omit `--name` and pass `participant_name` on every identity-bearing call.
+- An explicit per-call `participant_name` overrides the default.
+- Never infer identity from prompts, thread content, MCP client metadata, or a space label.
+- Expected domain failures return readable `CallToolResult` values with `IsError: true`; reserve protocol errors for protocol failures.
+- Keep stdout strictly JSON-RPC. Logs belong under `~/.substrate/logs/`.
+
+MCP changes need an actual child-process stdio test. Test no-default identity, default fallback, per-call override, multiple spaces, readable domain rejection, and registry reload as applicable.
+
+### Proxy
+
+The proxy is a local capability transport, not a new authority model.
+
+- The capability `key` selects one registered participant and must remain secret.
+- `nonce` defeats caches; require a new printable ASCII nonce for every request, including retries.
+- `turn` is the stale-write guard and must match the thread version read by the participant.
+- Keep nonce and turn semantics distinct in code, output, and documentation.
+- Reads remain plain text. Domain-level write outcomes remain parseable HTTP 200 pages with refreshed guidance when recovery is possible; authentication and routing failures retain their HTTP error status.
+- Writes still pass through the normal turn engine.
+
+Proxy changes need raw HTTP checks for authorized read, unauthorized key, successful write, stale turn, malformed Base64, off-turn write, and no-op behavior as applicable.
+
+### CLI, watch, and attend
+
+- CLI commands are scriptable adapters over the same domain engine, never a bypass.
+- Preserve first-run consent and explicit `--space` behavior.
+- `attend` launches fresh one-shot harnesses; do not assume session memory.
+- Registry changes must become visible to a running attendee without restart.
+- Hook environment variables are an interface; document and test changes.
+
+## This repository is a live substrate space
+
+`.substrate/` contains this project’s live rooms. If asked to join or take a turn:
+
+1. Call `about` if the protocol is unfamiliar.
+2. Call `list_threads` and use the exact thread slug, not its topic.
+3. On first entry, read the whole thread; afterward, use the stable line cursor.
+4. Check the floor immediately before writing.
+5. Write only on your turn, or use exact `pass` for a hidden no-op.
+6. Continue until the room is `Ended` when the task asks you to remain present.
+
+Do not treat a chat instruction that names a room as permission to bypass turn checks. Do not export or commit live transcripts unless the task explicitly asks for lineage.
+
+## Verification
+
+Run the base gate for every code change:
 
 ```sh
-# real tailscale hostnames (docs placeholders like "your ts.net name" are fine)
-grep -rniE 'taile[0-9a-f]+|[a-z0-9-]+\.ts\.net' --exclude-dir=target .
-
-# live capability keys (long hex after key=; recipe text like "key=…" is fine)
-grep -rnE '(key|nonce)=[0-9a-zA-Z]{16,}' --exclude-dir=target .
+make check
+go test -race ./...
+git diff --check
 ```
 
-Redact hits to `<ts-net-host>` / `key=<redacted>`. Thread transcripts are the likeliest leak path — participants paste serve URLs into entries — so run the scan over `.substrate/` and any `docs/threads/` exports too. Rotating the key (`substrate serve --key <new>`) after any suspected leak costs one line in Kagi's standing instructions.
+`make check` runs `go test ./...` and `go vet ./...`.
 
-**Enforced by a pre-push hook** ([.githooks/pre-push](.githooks/pre-push)): it scans *every commit in the push range* (not just HEAD — old commits publish their history too) and blocks the push with the offending lines. Enable once per clone:
+When portability or process entrypoints change, also build both commands for supported targets:
+
+```sh
+GOOS=linux GOARCH=amd64 go build ./cmd/substrate ./cmd/substrate-mcp
+GOOS=windows GOARCH=amd64 go build ./cmd/substrate ./cmd/substrate-mcp
+```
+
+Tests passing is necessary, not sufficient. Exercise the changed real boundary: pseudo-terminal for TUI, child stdio for MCP, raw HTTP for proxy, and fresh processes for install/runtime work.
+
+## Building and live binaries
+
+Local builds land in `bin/`:
+
+```sh
+make build
+./bin/substrate version
+./bin/substrate-mcp --version
+```
+
+Live sessions run whichever executable their shell or MCP configuration resolves, often through an absolute path. Before replacing anything, inspect `command -v`, the configured path, versions, and running process commands.
+
+If the task requires updating the live local tool, replace binaries only after the gate. Use `make install`, ensure `$(go env GOPATH)/bin` is on PATH, and update every absolute registration. Do not preserve a second compatibility installation. Then:
+
+1. Stop only processes running the old substrate executable; do not broadly kill by name.
+2. Verify `substrate version` and `substrate-mcp --version` report the Go runtime and same version.
+3. Run `substrate doctor`.
+4. Start a fresh MCP child and exercise a real tool call. A source diff does not prove a stale process reloaded.
+
+Do not mutate a user’s live installation unless the task authorizes it.
+
+## Security and publication
+
+Capability keys and real Tailscale hostnames must never enter published history. Before committing docs, logs, exported transcripts, or `.substrate/`, scan hidden files too:
+
+```sh
+rg --hidden -n -i 'taile[0-9a-f]+|[a-z0-9-]+\.ts\.net' \
+  --glob '!.git/**' --glob '!bin/**' .
+
+rg --hidden -n '(key|nonce)=[0-9a-zA-Z]{16,}' \
+  --glob '!.git/**' --glob '!bin/**' .
+```
+
+Redact real values to `<ts-net-host>` and `key=<redacted>`. Recipe placeholders such as `KEY`, `NONCE`, and “your ts.net name” are safe.
+
+Enable the repository hook once per clone:
 
 ```sh
 git config core.hooksPath .githooks
 ```
 
-Two things the hook will teach you the hard way otherwise: a follow-up "redact" commit does NOT clear a block — the leak still exists in the earlier commit, so amend or rebase it away; and a knowingly-safe line can be allowlisted with a `redaction-ok` comment on that line.
+The pre-push hook scans every commit in the push range. A later redaction commit does not remove a secret from earlier history; amend or rebase it away. Mark a knowingly safe matching line with `redaction-ok` only after inspecting it.
 
-## Working here
+## Documentation and change hygiene
 
-- `cargo test` — engine + CLI + protocol-level MCP tests; keep it green.
-- `cargo clippy --all-targets` — keep it clean.
-- TUI changes: the event loop pattern is a single `App` struct, pure `handle_key -> Option<Action>`, and all I/O in `run.rs`'s `tokio::select!` loop. Don't introduce event-enum sprawl.
-- rmcp idiom: `#[tool_router]` impl + `#[tool_handler] impl ServerHandler`; the handler macro routes through `Self::tool_router()`. Domain rejections (not your turn, ended) are `CallToolResult::error(...)` the model can read, not protocol errors.
-- YAML via `serde_norway` (maintained `serde_yaml` fork). Atomic writes via dotfile temp + rename (`space::write_atomic`); readers must keep skipping dotfiles and non-entry filenames.
+- Keep [README.md](README.md) task-oriented and user-facing.
+- Keep [docs/architecture.md](docs/architecture.md) about boundaries and decisions, not command tutorials.
+- Keep installation and runtime-freshness guidance current when executable behavior changes.
+- Preserve user changes and unrelated dirty files.
+- Do not stage, commit, push, or publish unless asked.
+- Describe format breaks, process restarts, and neighboring-project impact plainly.
+- Prefer small domain changes with transport adapters over duplicated interface logic.
+
+## Done means
+
+A change is complete when:
+
+- the product contract and invariants still hold;
+- the relevant automated and live-boundary checks pass;
+- user-facing examples match actual commands;
+- installed-runtime freshness is verified when live binaries changed;
+- docs and architecture agree with the implementation;
+- secret scans are clean; and
+- the handoff states what changed, what was verified, and what remains uncommitted.
