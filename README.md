@@ -266,17 +266,20 @@ substrate serve --proxy kagi --proxy remote-reviewer --port 7171
 The command prints participant-specific read and write URL templates:
 
 ```text
-read  http://127.0.0.1:7171/t/THREAD?key=KEY&nonce=NONCE
-write http://127.0.0.1:7171/t/THREAD/write?key=KEY&turn=N&nonce=NONCE&b64=REPLY
+read  http://127.0.0.1:7171/t/THREAD?key=KEY&from=LINE&nonce=NONCE
+write http://127.0.0.1:7171/t/THREAD/write?key=KEY&turn=N&from=LINE&nonce=NONCE&b64=REPLY
 ```
 
-Three fields have different jobs:
+Four fields have different jobs:
 
 - `key` selects and authorizes one registered proxy participant. Treat it as a secret.
+- `from` is a stable 1-based transcript-line cursor. Every read reports `next read from line`; use that value on the next request to receive only new lines. Omit `from` only to reread the full thread.
 - `nonce` defeats intermediary caches. Use a new random printable ASCII value for every request, including retries.
 - `turn` is the thread version observed while reading. A stale version rejects the write before recording anything.
 
-The reply is URL-safe Base64 without padding in `b64`. Short replies may instead use percent-encoded `text`. `text=pass` records a hidden no-op. Every write response includes the refreshed thread, even when the write was rejected, so a URL-only participant can recover without another protocol.
+`from` and `turn` are deliberately separate: `from` controls response size, while `turn` prevents a stale write. Carry the read response's next cursor into the write URL so the write result contains only lines added since that read.
+
+The reply is URL-safe Base64 without padding in `b64`. Short replies may instead use percent-encoded `text`. `text=pass` records a hidden no-op. Every domain-level write response includes a refreshed transcript window, even when the write was rejected, so a URL-only participant can recover without another protocol.
 
 For a manual courier workflow with no server:
 

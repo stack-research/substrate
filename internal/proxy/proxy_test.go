@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/base64"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -73,6 +74,62 @@ func TestUnauthorizedAndSlashThread(t *testing.T) {
 	response, body := perform(t, handler, "/t/nested%2Froom?key=secret")
 	if response.Code != 200 || !strings.Contains(body, "thread: nested/room") {
 		t.Fatalf("slash read: %d\n%s", response.Code, body)
+	}
+}
+
+func TestIncrementalReadCursorAndWriteRefresh(t *testing.T) {
+	space, thread := proxySpace(t)
+	handler := NewHandler(space, []Participant{{Name: substrate.MustName("kagi"), Key: "secret"}})
+	if _, err := substrate.WriteEntry(space, thread, substrate.MustName("user-name"), "opening context"); err != nil {
+		t.Fatal(err)
+	}
+
+	response, body := perform(t, handler, "/t/lab?key=secret&nonce=first")
+	if response.Code != http.StatusOK || !strings.Contains(body, "opening context") || !strings.Contains(body, "next read from line: 4") {
+		t.Fatalf("full read did not advertise its cursor:\n%s", body)
+	}
+	if !strings.Contains(body, "&from=4&nonce=NONCE") || !strings.Contains(body, "stable 1-based transcript line cursor") {
+		t.Fatalf("incremental read instructions missing:\n%s", body)
+	}
+
+	reply := base64.RawURLEncoding.EncodeToString([]byte("incremental reply"))
+	response, body = perform(t, handler, "/t/lab/write?key=secret&turn=1&from=4&nonce=second&b64="+url.QueryEscape(reply))
+	if response.Code != http.StatusOK || !strings.Contains(body, "substrate: entry recorded") || !strings.Contains(body, "incremental reply") {
+		t.Fatalf("incremental write response failed:\n%s", body)
+	}
+	if strings.Contains(body, "opening context") || !strings.Contains(body, "showing from line: 4") {
+		t.Fatalf("write response repeated prior transcript:\n%s", body)
+	}
+
+	if _, err := substrate.WriteEntry(space, thread, substrate.MustName("user-name"), "moderator follow-up"); err != nil {
+		t.Fatal(err)
+	}
+	_, total, err := substrate.ReadTranscript(space, thread, substrate.Window{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, body = perform(t, handler, "/t/lab?key=secret&from=4&nonce=third")
+	if response.Code != http.StatusOK || strings.Contains(body, "opening context") || !strings.Contains(body, "incremental reply") || !strings.Contains(body, "moderator follow-up") {
+		t.Fatalf("incremental read window is wrong:\n%s", body)
+	}
+	if !strings.Contains(body, fmt.Sprintf("next read from line: %d", total+1)) {
+		t.Fatalf("next cursor is wrong, total=%d:\n%s", total, body)
+	}
+
+	response, body = perform(t, handler, fmt.Sprintf("/t/lab?key=secret&from=%d&nonce=fourth", total+1))
+	if response.Code != http.StatusOK || strings.Contains(body, "incremental reply") || strings.Contains(body, "moderator follow-up") {
+		t.Fatalf("caught-up read should have an empty transcript:\n%s", body)
+	}
+}
+
+func TestInvalidReadCursorIsRejected(t *testing.T) {
+	space, _ := proxySpace(t)
+	handler := NewHandler(space, []Participant{{Name: substrate.MustName("kagi"), Key: "secret"}})
+	for _, raw := range []string{"", "0", "-1", "not-a-number"} {
+		response, body := perform(t, handler, "/t/lab?key=secret&from="+url.QueryEscape(raw))
+		if response.Code != http.StatusBadRequest || !strings.Contains(body, "use a 1-based transcript line") {
+			t.Fatalf("from=%q: status=%d body=%s", raw, response.Code, body)
+		}
 	}
 }
 

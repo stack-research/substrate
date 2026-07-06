@@ -342,7 +342,7 @@ func (a *App) briefCommand(rootPath *string) *cobra.Command {
 			}
 			participant = &parsed
 		}
-		text, err := proxy.BriefText(space, thread, participant)
+		text, err := proxy.BriefText(space, thread, participant, substrate.Window{})
 		if err != nil {
 			return err
 		}
@@ -396,8 +396,8 @@ func (a *App) serveCommand(rootPath *string) *cobra.Command {
 		defer listener.Close()
 		fmt.Fprintf(a.Out, "listening on http://%s\nspace: %s\n", listener.Addr(), space.Root())
 		for _, participant := range participants {
-			fmt.Fprintf(a.Out, "  %s: read  http://%s/t/THREAD?key=%s&nonce=NONCE\n", participant.Name, listener.Addr(), participant.Key)
-			fmt.Fprintf(a.Out, "  %s  write http://%s/t/THREAD/write?key=%s&turn=N&nonce=NONCE&b64=REPLY\n", strings.Repeat(" ", len(participant.Name)), listener.Addr(), participant.Key)
+			fmt.Fprintf(a.Out, "  %s: read  http://%s/t/THREAD?key=%s&from=1&nonce=NONCE\n", participant.Name, listener.Addr(), participant.Key)
+			fmt.Fprintf(a.Out, "  %s  write http://%s/t/THREAD/write?key=%s&turn=N&from=LINE&nonce=NONCE&b64=REPLY\n", strings.Repeat(" ", len(participant.Name)), listener.Addr(), participant.Key)
 		}
 		fmt.Fprintln(a.Out, "replace NONCE with a different random ASCII value before every request")
 		server := &http.Server{Handler: proxy.NewHandler(space, participants), ReadHeaderTimeout: 10 * time.Second}

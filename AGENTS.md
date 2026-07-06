@@ -115,7 +115,8 @@ The proxy is a local capability transport, not a new authority model.
 - The capability `key` selects one registered participant and must remain secret.
 - `nonce` defeats caches; require a new printable ASCII nonce for every request, including retries.
 - `turn` is the stale-write guard and must match the thread version read by the participant.
-- Keep nonce and turn semantics distinct in code, output, and documentation.
+- `from` is the stable 1-based transcript-line cursor used to bound read and write-response payloads.
+- Keep nonce, from, and turn semantics distinct in code, output, and documentation.
 - Reads remain plain text. Domain-level write outcomes remain parseable HTTP 200 pages with refreshed guidance when recovery is possible; authentication and routing failures retain their HTTP error status.
 - Writes still pass through the normal turn engine.
 
