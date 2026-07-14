@@ -1,3 +1,8 @@
+> Historical session export (2026-06-10, v1 Rust-era build): the first
+> mixed human/agent dogfooding thread in this repo's own space. Tool and
+> command names may predate the Go rewrite (e.g. `cargo install`); the
+> human participant is shown as `user-name`. Transcript text is verbatim.
+
 [user-name @ 2026-06-10T17:23:50Z]
 @claude and I are working on this tool and this is the project's repo. why not test it here too.
 

@@ -10,17 +10,14 @@ import (
 // workspace; color and spacing establish hierarchy, with the composer as the
 // one prominent bordered surface.
 type styles struct {
-	background      color.Color
-	surface         color.Color
-	surfaceRaised   color.Color
-	text            color.Color
-	muted           color.Color
-	faint           color.Color
-	accent          color.Color
-	accentSecondary color.Color
-	good            color.Color
-	warn            color.Color
-	danger          color.Color
+	background color.Color
+	surface    color.Color
+	text       color.Color
+	muted      color.Color
+	faint      color.Color
+	accent     color.Color
+	good       color.Color
+	danger     color.Color
 
 	topbar          lipgloss.Style
 	brand           lipgloss.Style
@@ -65,7 +62,6 @@ func newStyles(dark bool) styles {
 	accent := choose(lipgloss.Color("#A9369E"), lipgloss.Color("#F28BE7"))
 	accent2 := choose(lipgloss.Color("#087A83"), lipgloss.Color("#71D7E0"))
 	good := choose(lipgloss.Color("#18744A"), lipgloss.Color("#75D8A8"))
-	warn := choose(lipgloss.Color("#976400"), lipgloss.Color("#F3C969"))
 	danger := choose(lipgloss.Color("#B42335"), lipgloss.Color("#FF8794"))
 
 	composer := lipgloss.NewStyle().
@@ -79,8 +75,8 @@ func newStyles(dark bool) styles {
 		PaddingLeft(2)
 
 	return styles{
-		background: bg, surface: surface, surfaceRaised: raised, text: text, muted: muted,
-		faint: faint, accent: accent, accentSecondary: accent2, good: good, warn: warn, danger: danger,
+		background: bg, surface: surface, text: text, muted: muted,
+		faint: faint, accent: accent, good: good, danger: danger,
 		topbar:          lipgloss.NewStyle().Background(surface).Foreground(text),
 		brand:           lipgloss.NewStyle().Background(accent).Foreground(bg).Bold(true).Padding(0, 1),
 		crumb:           lipgloss.NewStyle().Foreground(muted).PaddingLeft(1),

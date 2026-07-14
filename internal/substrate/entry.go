@@ -14,11 +14,13 @@ import (
 
 const timestampBaseLayout = "20060102T150405"
 
+// EntryMeta is the YAML front matter of an entry file.
 type EntryMeta struct {
 	Author    Name      `yaml:"author"`
 	Timestamp time.Time `yaml:"timestamp"`
 }
 
+// Entry is one turn's markdown entry, loaded from its file in the thread dir.
 type Entry struct {
 	Meta     EntryMeta
 	Body     string
@@ -26,6 +28,7 @@ type Entry struct {
 	Filename string
 }
 
+// IsNoOp reports whether content is a hidden pass ("pass", "no-op", or "...").
 func IsNoOp(content string) bool {
 	switch strings.ToLower(strings.TrimSpace(content)) {
 	case "no-op", "pass", "...":
@@ -142,6 +145,8 @@ func nextTimestamp(dir string) (time.Time, error) {
 	return now, nil
 }
 
+// LoadEntries reads a thread's visible entries in timestamp order, skipping
+// no-op turns and unparseable files.
 func LoadEntries(space *Space, thread Name) ([]Entry, error) {
 	if _, err := LoadThread(space, thread); err != nil {
 		return nil, err
@@ -170,6 +175,8 @@ func LoadEntries(space *Space, thread Name) ([]Entry, error) {
 	return entries, nil
 }
 
+// ThreadVersion counts a thread's entry files; it monotonically increases with
+// every turn taken, so callers can use it as a cheap change detector.
 func ThreadVersion(space *Space, thread Name) int {
 	entries, err := os.ReadDir(space.ThreadDir(thread))
 	if err != nil {

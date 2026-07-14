@@ -70,8 +70,7 @@ func BriefText(space *substrate.Space, thread substrate.Name, forName *substrate
 	}
 	var out strings.Builder
 	fmt.Fprintf(&out, "SUBSTRATE THREAD\n================\nparticipant: %s\nthread: %s\ntopic: %s\n", participant, thread, status.Topic)
-	statusText := string(status.Status)
-	fmt.Fprintf(&out, "conversation: turn-based group; append-only markdown addressed to everyone\nstatus: %s\n", strings.ToUpper(statusText[:1])+statusText[1:])
+	fmt.Fprintf(&out, "conversation: turn-based group; append-only markdown addressed to everyone\nstatus: %s\n", status.Status.Title())
 	fmt.Fprintf(&out, "current turn: %s%s\nturn order: %s\ntranscript lines: %d\nshowing from line: %d\nnext read from line: %d\nthread version: %d\n", status.Current, yours, strings.Join(order, " -> "), totalLines, fromLine, nextLine, version)
 	if len(urls) == 2 {
 		fmt.Fprintf(&out, "\nIMPORTANT: USE A NEW NONCE FOR EVERY REQUEST\n============================================\nBefore EVERY fetch - read or write - replace NONCE with a new random ASCII value. Never reuse a nonce, including for a retry. Reusing one can return an old cached page. The nonce defeats caches; it is not the thread version.\n\nTo read only lines added after this response, fetch this path on the same host as this page:\n%s&from=%d&nonce=NONCE\n\nThe from= value is a stable 1-based transcript line cursor. Keep the newest 'next read from line' value. Omit from= only when you intentionally need the full thread again.\n", urls[0], nextLine)
@@ -124,8 +123,7 @@ func NewHandler(space *substrate.Space, participants []Participant) http.Handler
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		readURL := fmt.Sprintf("/t/%s?key=%s", url.PathEscape(thread.String()), url.QueryEscape(participant.Key))
-		writeURL := fmt.Sprintf("/t/%s/write?key=%s", url.PathEscape(thread.String()), url.QueryEscape(participant.Key))
+		readURL, writeURL := participantURLs(thread, participant)
 		text, err := BriefText(space, thread, &participant.Name, window, readURL, writeURL)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusNotFound)
@@ -134,6 +132,12 @@ func NewHandler(space *substrate.Space, participants []Participant) http.Handler
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte(text))
 	})
+}
+
+func participantURLs(thread substrate.Name, participant Participant) (readURL, writeURL string) {
+	base := "/t/" + url.PathEscape(thread.String())
+	key := url.QueryEscape(participant.Key)
+	return base + "?key=" + key, base + "/write?key=" + key
 }
 
 func readWindow(query url.Values) (substrate.Window, error) {
@@ -169,8 +173,7 @@ func route(u *url.URL) (substrate.Name, bool, bool) {
 func handleWrite(w http.ResponseWriter, r *http.Request, space *substrate.Space, thread substrate.Name, participant Participant) {
 	window, _ := readWindow(r.URL.Query())
 	refreshed := func(outcome string) string {
-		readURL := fmt.Sprintf("/t/%s?key=%s", url.PathEscape(thread.String()), url.QueryEscape(participant.Key))
-		writeURL := fmt.Sprintf("/t/%s/write?key=%s", url.PathEscape(thread.String()), url.QueryEscape(participant.Key))
+		readURL, writeURL := participantURLs(thread, participant)
 		brief, err := BriefText(space, thread, &participant.Name, window, readURL, writeURL)
 		if err != nil {
 			brief, _ = BriefText(space, thread, &participant.Name, substrate.Window{}, readURL, writeURL)
@@ -180,7 +183,7 @@ func handleWrite(w http.ResponseWriter, r *http.Request, space *substrate.Space,
 	query := r.URL.Query()
 	content := query.Get("text")
 	if encoded, present := query["b64"]; present && len(encoded) > 0 {
-		decoded, err := DecodeBase64(encoded[0])
+		decoded, err := decodeBase64(encoded[0])
 		if err != nil {
 			writePage(w, "substrate: could not decode your reply", refreshed("the b64 parameter did not decode. Re-encode your reply, or use &text= with percent-encoding instead."))
 			return
@@ -229,7 +232,7 @@ func writePage(w http.ResponseWriter, title, body string) {
 	fmt.Fprintf(w, "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>%s</title></head><body><h1>%s</h1><pre>%s</pre></body></html>", html.EscapeString(title), html.EscapeString(title), html.EscapeString(body))
 }
 
-func DecodeBase64(input string) (string, error) {
+func decodeBase64(input string) (string, error) {
 	clean := strings.Map(func(r rune) rune {
 		if r == ' ' || r == '\n' || r == '\r' || r == '\t' {
 			return -1

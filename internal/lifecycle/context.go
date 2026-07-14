@@ -1,3 +1,4 @@
+// Package lifecycle ties process shutdown signals to context cancellation.
 package lifecycle
 
 import (

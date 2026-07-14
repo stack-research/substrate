@@ -52,9 +52,6 @@ lcov.info
 # --- Agent harnesses (local IDE + CLI agent config) ---------------------------
 
 .cursor/
-# …except shared project hooks (substrate turn re-engagement)
-!.cursor/hooks.json
-!.cursor/hooks/
 .claude/
 CLAUDE.local.md
 .codex/

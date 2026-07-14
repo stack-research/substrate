@@ -33,6 +33,8 @@ Room transcripts, decision records, and historical notes are evidence and lineag
 | `internal/proxy` | Capability-key HTTP transport and courier briefs |
 | `internal/watcher` | Floor watches and ephemeral `attend` processes |
 | `internal/cli` | Cobra commands, first-run consent, interface wiring, diagnostics |
+| `internal/lifecycle` | Signal-to-context shutdown wiring |
+| `internal/version` | Version string and runtime tag |
 | `cmd/substrate` | Human CLI and TUI executable |
 | `cmd/substrate-mcp` | Stdio MCP executable; stdout is protocol-only |
 

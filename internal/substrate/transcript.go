@@ -5,11 +5,14 @@ import (
 	"strings"
 )
 
+// Window selects part of a transcript: the last N lines, or everything from a
+// stable 1-based line cursor. A zero Window means the whole transcript.
 type Window struct {
 	LastN    *int
 	FromLine *int
 }
 
+// RenderTranscript renders entries as attributed plain text, one block each.
 func RenderTranscript(entries []Entry) string {
 	var out strings.Builder
 	for _, entry := range entries {
@@ -20,6 +23,8 @@ func RenderTranscript(entries []Entry) string {
 	return out.String()
 }
 
+// ApplyWindow trims text to the window and returns it with the total line
+// count, which callers use as the next read cursor.
 func ApplyWindow(text string, window Window) (string, int) {
 	if text == "" {
 		return "", 0
@@ -38,6 +43,7 @@ func ApplyWindow(text string, window Window) (string, int) {
 	return strings.Join(lines[start:end], "\n"), total
 }
 
+// ReadTranscript loads a thread's entries and renders the windowed transcript.
 func ReadTranscript(space *Space, thread Name, window Window) (string, int, error) {
 	entries, err := LoadEntries(space, thread)
 	if err != nil {

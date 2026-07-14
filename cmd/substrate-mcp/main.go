@@ -62,6 +62,8 @@ func main() {
 	ctx, cancel := lifecycle.SignalContext(context.Background())
 	defer cancel()
 	if err := service.Server().Run(ctx, &mcp.StdioTransport{}); err != nil {
+		// The go-sdk wraps the EOF of a client hanging up in a plain string, so
+		// errors.Is alone cannot recognize this normal shutdown path.
 		if !errors.Is(err, io.EOF) && !strings.Contains(err.Error(), "server is closing: EOF") {
 			fatal(err)
 		}

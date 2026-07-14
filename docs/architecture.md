@@ -22,6 +22,8 @@ attend/watch ───┘              └───────────> ~/.
 | `cmd/substrate-mcp` | Stdio process boundary and file-only logging |
 | `internal/mcpserver` | Official SDK tools, multi-space resolution, per-call identity, waits |
 | `internal/substrate` | Names, YAML, atomic storage, locks, entries, transcripts, turns, moderation, machine registry |
+| `internal/lifecycle` | Signal-to-context shutdown wiring |
+| `internal/version` | Version string and runtime tag |
 
 Dependencies point inward. `internal/substrate` imports no TUI, CLI, MCP, or HTTP package. A transport turns user input into domain calls and turns domain results into transport-appropriate output.
 

@@ -1,3 +1,6 @@
+// Package watcher provides filesystem watching for substrate spaces: the
+// recursive fsnotify primitives shared with the TUI, plus the blocking
+// watch/attend loops behind the CLI commands of the same names.
 package watcher
 
 import (
@@ -143,11 +146,7 @@ func Attend(ctx context.Context, name substrate.Name, override string, out, errO
 		case <-ctx.Done():
 			return nil
 		case event := <-w.Events:
-			if event.Op&fsnotify.Create != 0 {
-				if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
-					_ = w.Add(event.Name)
-				}
-			}
+			TrackNewDirs(w, event)
 		case err := <-w.Errors:
 			if err != nil {
 				fmt.Fprintf(errOut, "attend watch warning: %v\n", err)
@@ -166,6 +165,31 @@ func runHook(ctx context.Context, command string, env map[string]string, out, er
 	cmd.Stdout, cmd.Stderr = out, errOut
 	if err := cmd.Run(); err != nil {
 		fmt.Fprintf(errOut, "command failed: %v\n", err)
+	}
+}
+
+// NewRecursive returns an fsnotify watcher covering root and every nested
+// directory. The caller owns the watcher and must Close it.
+func NewRecursive(root string) (*fsnotify.Watcher, error) {
+	w, err := fsnotify.NewWatcher()
+	if err != nil {
+		return nil, err
+	}
+	if err := addRecursive(w, root); err != nil {
+		_ = w.Close()
+		return nil, err
+	}
+	return w, nil
+}
+
+// TrackNewDirs adds a just-created directory to the watch set so events from
+// inside it keep flowing; other events are ignored.
+func TrackNewDirs(w *fsnotify.Watcher, event fsnotify.Event) {
+	if event.Op&fsnotify.Create == 0 {
+		return
+	}
+	if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
+		_ = w.Add(event.Name)
 	}
 }
 

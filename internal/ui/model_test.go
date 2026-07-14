@@ -1,12 +1,15 @@
 package ui
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/stack-research/substrate/internal/substrate"
+	"github.com/stack-research/substrate/internal/watcher"
 )
 
 func testModel(t *testing.T) (*Model, *substrate.Space, substrate.Name) {
@@ -146,4 +149,51 @@ func TestFocusAndQuitKeys(t *testing.T) {
 	if _, ok := command().(tea.QuitMsg); !ok {
 		t.Fatalf("command returned %T", command())
 	}
+}
+
+func TestDiskPollReloadsTakenTurn(t *testing.T) {
+	model, space, thread := testModel(t)
+	if _, err := substrate.WriteEntry(space, thread, substrate.MustName("user-name"), "opening"); err != nil {
+		t.Fatal(err)
+	}
+	if model.rooms[model.selected].Current != substrate.MustName("user-name") {
+		t.Fatal("model should still have its pre-poll state")
+	}
+	model.Update(diskPollMsg{})
+	if got := model.rooms[model.selected].Current; got != substrate.MustName("claude-a") {
+		t.Fatalf("current after poll = %s, want claude-a", got)
+	}
+}
+
+func TestPersistentWatcherDeliversSequentialChanges(t *testing.T) {
+	root := t.TempDir()
+	w, err := watcher.NewRecursive(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	waitForChange := func() <-chan tea.Msg {
+		result := make(chan tea.Msg, 1)
+		go func() { result <- waitForDiskChange(w)() }()
+		return result
+	}
+	assertChange := func(path string) {
+		t.Helper()
+		result := waitForChange()
+		if err := os.WriteFile(path, []byte("change"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case msg := <-result:
+			if _, ok := msg.(diskChangedMsg); !ok {
+				t.Fatalf("watcher message = %T, want diskChangedMsg", msg)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("watcher did not report the filesystem change")
+		}
+	}
+
+	assertChange(filepath.Join(root, "first"))
+	assertChange(filepath.Join(root, "second"))
 }

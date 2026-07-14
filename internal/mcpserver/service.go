@@ -1,3 +1,5 @@
+// Package mcpserver exposes substrate over the Model Context Protocol: one
+// server, many spaces, with per-call participant identity.
 package mcpserver
 
 import (
@@ -20,6 +22,8 @@ const (
 	waitFallback = 15 * time.Second
 )
 
+// ToolNames lists every tool registered by addTools; keep the two in sync
+// (the integration test cross-checks the count against the live server).
 var ToolNames = []string{
 	"about", "check_turn", "end_thread", "invite", "list_threads", "new_thread", "quiet",
 	"read_thread", "reorder_turns", "resume_thread", "set_next", "set_topic", "wait_for_turn", "write_entry",
@@ -117,7 +121,7 @@ func (s *Service) statusText(space *substrate.Space, thread, actor substrate.Nam
 		}
 	}
 	yourTurn := status.Current == actor && status.Status == substrate.Active
-	text := fmt.Sprintf("thread: %s\ntopic: %s\nstatus: %s\nparticipant: %s\ncurrent turn: %s\nyour turn: %s\npaused on moderator: %s\nturn order: %s\ntranscript lines: %d\n", thread, status.Topic, titleStatus(status.Status), actor, status.Current, yesNo(yourTurn), yesNo(status.Paused), strings.Join(order, " → "), lines)
+	text := fmt.Sprintf("thread: %s\ntopic: %s\nstatus: %s\nparticipant: %s\ncurrent turn: %s\nyour turn: %s\npaused on moderator: %s\nturn order: %s\ntranscript lines: %d\n", thread, status.Topic, status.Status.Title(), actor, status.Current, yesNo(yourTurn), yesNo(status.Paused), strings.Join(order, " → "), lines)
 	if remaining := status.Quieted[actor]; remaining > 0 {
 		text += fmt.Sprintf("you are quieted for your next %d turn(s)\n", remaining)
 	}
@@ -226,7 +230,7 @@ func (s *Service) about(context.Context, *mcp.CallToolRequest, aboutParams) (*mc
 	if set, err := s.Source.Load(); err == nil && len(set.Spaces) > 0 {
 		spaces = strings.Join(set.Labels(), ", ")
 	}
-	return success(fmt.Sprintf("# substrate — a shared chalkboard\n\nserver version: %s\nruntime: go\nadvertised tools: %s\n\nLocal-first, turn-based group conversations between humans, agents, and anything else. Entries are markdown, append-only, and addressed to the whole room. Default participant: %s. Spaces: %s.\n\n## The loop\n1. list_threads — find the exact thread slug and floor.\n2. wait_for_turn — wait; a TIMEOUT MEANS STILL WAITING, so call again.\n3. read_thread — catch up; use from_line = previous transcript total + 1.\n4. write_entry — reply, or send exactly pass for an invisible no-op.\n5. Repeat until status is Ended.\n\nModerators may use set_next, invite, quiet, reorder_turns, set_topic, end_thread, and resume_thread without consuming a turn.", version.Version, strings.Join(ToolNames, ", "), s.defaultActorText(), spaces))
+	return success(fmt.Sprintf("# substrate — a shared chalkboard\n\nserver version: %s\nruntime: %s\nadvertised tools: %s\n\nLocal-first, turn-based group conversations between humans, agents, and anything else. Entries are markdown, append-only, and addressed to the whole room. Default participant: %s. Spaces: %s.\n\n## The loop\n1. list_threads — find the exact thread slug and floor.\n2. wait_for_turn — wait; a TIMEOUT MEANS STILL WAITING, so call again.\n3. read_thread — catch up; use from_line = previous transcript total + 1.\n4. write_entry — reply, or send exactly pass for an invisible no-op.\n5. Repeat until status is Ended.\n\nModerators may use set_next, invite, quiet, reorder_turns, set_topic, end_thread, and resume_thread without consuming a turn.", version.Version, version.Runtime, strings.Join(ToolNames, ", "), s.defaultActorText(), spaces))
 }
 
 func (s *Service) newThread(_ context.Context, _ *mcp.CallToolRequest, p newThreadParams) (*mcp.CallToolResult, any, error) {
@@ -249,7 +253,7 @@ func (s *Service) newThread(_ context.Context, _ *mcp.CallToolRequest, p newThre
 	if err != nil {
 		return reject(err)
 	}
-	order, err := parseNames(p.TurnOrder)
+	order, err := substrate.ParseNames(p.TurnOrder)
 	if err != nil {
 		return reject(err)
 	}
@@ -257,7 +261,7 @@ func (s *Service) newThread(_ context.Context, _ *mcp.CallToolRequest, p newThre
 	if err != nil {
 		return reject(err)
 	}
-	return success(fmt.Sprintf("created thread: %s\ntopic: %s\nopening floor: %s\npaused on moderator: %s\nturn order: %s", thread, cfg.Topic, cfg.Current(), yesNo(cfg.Paused()), joinNames(cfg.TurnOrder, " → ")))
+	return success(fmt.Sprintf("created thread: %s\ntopic: %s\nopening floor: %s\npaused on moderator: %s\nturn order: %s", thread, cfg.Topic, cfg.Current(), yesNo(cfg.Paused()), substrate.JoinNames(cfg.TurnOrder, " → ")))
 }
 
 func (s *Service) listThreads(_ context.Context, _ *mcp.CallToolRequest, p actorParams) (*mcp.CallToolResult, any, error) {
@@ -293,7 +297,7 @@ func (s *Service) listThreads(_ context.Context, _ *mcp.CallToolRequest, p actor
 			if status.Paused {
 				paused = " (paused on moderator)"
 			}
-			fmt.Fprintf(&out, "thread: %s%s · status: %s · turn: %s%s%s · topic: %s\n", thread, spacePart, titleStatus(status.Status), status.Current, yours, paused, status.Topic)
+			fmt.Fprintf(&out, "thread: %s%s · status: %s · turn: %s%s%s · topic: %s\n", thread, spacePart, status.Status.Title(), status.Current, yours, paused, status.Topic)
 		}
 	}
 	if out.Len() == 0 {
@@ -451,7 +455,7 @@ func (s *Service) resolveModerator(p threadParams) (*substrate.Space, substrate.
 }
 
 func (s *Service) setNext(_ context.Context, _ *mcp.CallToolRequest, p modNameParams) (*mcp.CallToolResult, any, error) {
-	space, thread, actor, err := s.resolveModerator(threadParams{p.Space, p.Thread, p.ParticipantName})
+	space, thread, actor, err := s.resolveModerator(threadParams{Space: p.Space, Thread: p.Thread, ParticipantName: p.ParticipantName})
 	if err != nil {
 		return reject(err)
 	}
@@ -465,7 +469,7 @@ func (s *Service) setNext(_ context.Context, _ *mcp.CallToolRequest, p modNamePa
 	return s.moderatorOK(space, thread, actor, "the floor passes to "+name.String())
 }
 func (s *Service) invite(_ context.Context, _ *mcp.CallToolRequest, p modNameParams) (*mcp.CallToolResult, any, error) {
-	space, thread, actor, err := s.resolveModerator(threadParams{p.Space, p.Thread, p.ParticipantName})
+	space, thread, actor, err := s.resolveModerator(threadParams{Space: p.Space, Thread: p.Thread, ParticipantName: p.ParticipantName})
 	if err != nil {
 		return reject(err)
 	}
@@ -474,14 +478,11 @@ func (s *Service) invite(_ context.Context, _ *mcp.CallToolRequest, p modNamePar
 		return reject(err)
 	}
 	registered := ""
-	if _, err := space.Participant(name); err != nil {
-		var unknown *substrate.UnknownParticipantError
-		if !errors.As(err, &unknown) {
-			return reject(err)
-		}
-		if err := space.AddParticipant(name, substrate.Agent); err != nil {
-			return reject(err)
-		}
+	added, err := space.EnsureParticipant(name)
+	if err != nil {
+		return reject(err)
+	}
+	if added {
 		registered = " (registered as a new agent)"
 	}
 	if err := substrate.Invite(space, thread, name); err != nil {
@@ -490,7 +491,7 @@ func (s *Service) invite(_ context.Context, _ *mcp.CallToolRequest, p modNamePar
 	return s.moderatorOK(space, thread, actor, fmt.Sprintf("%s joins the thread at the end of the round%s", name, registered))
 }
 func (s *Service) quiet(_ context.Context, _ *mcp.CallToolRequest, p quietParams) (*mcp.CallToolResult, any, error) {
-	space, thread, actor, err := s.resolveModerator(threadParams{p.Space, p.Thread, p.ParticipantName})
+	space, thread, actor, err := s.resolveModerator(threadParams{Space: p.Space, Thread: p.Thread, ParticipantName: p.ParticipantName})
 	if err != nil {
 		return reject(err)
 	}
@@ -508,21 +509,21 @@ func (s *Service) quiet(_ context.Context, _ *mcp.CallToolRequest, p quietParams
 	return s.moderatorOK(space, thread, actor, confirmation)
 }
 func (s *Service) reorderTurns(_ context.Context, _ *mcp.CallToolRequest, p orderParams) (*mcp.CallToolResult, any, error) {
-	space, thread, actor, err := s.resolveModerator(threadParams{p.Space, p.Thread, p.ParticipantName})
+	space, thread, actor, err := s.resolveModerator(threadParams{Space: p.Space, Thread: p.Thread, ParticipantName: p.ParticipantName})
 	if err != nil {
 		return reject(err)
 	}
-	order, err := parseNames(p.Order)
+	order, err := substrate.ParseNames(p.Order)
 	if err != nil {
 		return reject(err)
 	}
 	if err := substrate.ReorderTurns(space, thread, order); err != nil {
 		return reject(err)
 	}
-	return s.moderatorOK(space, thread, actor, "turn order set: "+joinNames(order, " → "))
+	return s.moderatorOK(space, thread, actor, "turn order set: "+substrate.JoinNames(order, " → "))
 }
 func (s *Service) setTopic(_ context.Context, _ *mcp.CallToolRequest, p topicParams) (*mcp.CallToolResult, any, error) {
-	space, thread, actor, err := s.resolveModerator(threadParams{p.Space, p.Thread, p.ParticipantName})
+	space, thread, actor, err := s.resolveModerator(threadParams{Space: p.Space, Thread: p.Thread, ParticipantName: p.ParticipantName})
 	if err != nil {
 		return reject(err)
 	}
@@ -552,33 +553,11 @@ func (s *Service) resumeThread(_ context.Context, _ *mcp.CallToolRequest, p thre
 	return s.moderatorOK(space, thread, actor, "thread resumed — the floor is yours; say why the thread is back")
 }
 
-func parseNames(raw []string) ([]substrate.Name, error) {
-	names := make([]substrate.Name, 0, len(raw))
-	for _, value := range raw {
-		name, err := substrate.ParseName(strings.TrimSpace(value))
-		if err != nil {
-			return nil, err
-		}
-		names = append(names, name)
-	}
-	return names, nil
-}
-func joinNames(names []substrate.Name, separator string) string {
-	values := make([]string, len(names))
-	for i, name := range names {
-		values[i] = name.String()
-	}
-	return strings.Join(values, separator)
-}
 func yesNo(value bool) string {
 	if value {
 		return "yes"
 	}
 	return "no"
-}
-func titleStatus(status substrate.ThreadStatus) string {
-	value := string(status)
-	return strings.ToUpper(value[:1]) + value[1:]
 }
 
 func uintToInt(value *uint64) *int {

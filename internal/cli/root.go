@@ -1,3 +1,5 @@
+// Package cli implements the substrate command tree: space bootstrap, thread
+// operations, the TUI entry point, and the watch/attend/proxy daemons.
 package cli
 
 import (
@@ -6,12 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -43,7 +46,7 @@ func (a *App) Root() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "substrate",
 		Short:         "Turn-based group conversations between humans, agents, and anything else",
-		Version:       version.Version + " (go)",
+		Version:       version.Version + " (" + version.Runtime + ")",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE:          func(cmd *cobra.Command, _ []string) error { return a.runTUI(rootPath, "") },
@@ -74,7 +77,7 @@ func (a *App) initCommand(rootPath *string) *cobra.Command {
 		}
 		fmt.Fprintf(a.Out, "initialized space %q at %s\n", result.Label, *rootPath)
 		if len(result.Seeded) > 0 {
-			fmt.Fprintf(a.Out, "seeded participants: %s\n", joinNames(result.Seeded, ", "))
+			fmt.Fprintf(a.Out, "seeded participants: %s\n", substrate.JoinNames(result.Seeded, ", "))
 		}
 		fmt.Fprintln(a.Out, "registered in the machine registry — agents can already see it")
 		return nil
@@ -123,7 +126,7 @@ func (a *App) newCommand(rootPath *string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		order, err := parseNames(turns)
+		order, err := substrate.ParseNames(turns)
 		if err != nil {
 			return err
 		}
@@ -132,7 +135,7 @@ func (a *App) newCommand(rootPath *string) *cobra.Command {
 			return err
 		}
 		fmt.Fprintf(a.Out, "created %q — topic: %s\n", thread, topic)
-		fmt.Fprintf(a.Out, "turns: %s (moderator first — your opening entry sets the instructions)\n", joinNames(cfg.TurnOrder, " → "))
+		fmt.Fprintf(a.Out, "turns: %s (moderator first — your opening entry sets the instructions)\n", substrate.JoinNames(cfg.TurnOrder, " → "))
 		return nil
 	}}
 	cmd.Flags().StringVar(&topic, "topic", "", "thread topic")
@@ -184,7 +187,7 @@ func (a *App) statusCommand(rootPath *string) *cobra.Command {
 			if status.Paused {
 				paused = " (paused on moderator)"
 			}
-			fmt.Fprintf(a.Out, "  %s — %s, turn: %s%s — %s\n", thread, titleStatus(status.Status), status.Current, paused, status.Topic)
+			fmt.Fprintf(a.Out, "  %s — %s, turn: %s%s — %s\n", thread, status.Status.Title(), status.Current, paused, status.Topic)
 		}
 		return nil
 	}}
@@ -217,7 +220,7 @@ func (a *App) printThreadStatus(space *substrate.Space, thread substrate.Name) e
 		}
 		order = append(order, label)
 	}
-	fmt.Fprintf(a.Out, "thread: %s\ntopic: %s\nstatus: %s\nturn: %s%s\norder: %s\ntranscript lines: %d\n", thread, status.Topic, titleStatus(status.Status), status.Current, paused, strings.Join(order, " → "), lines)
+	fmt.Fprintf(a.Out, "thread: %s\ntopic: %s\nstatus: %s\nturn: %s%s\norder: %s\ntranscript lines: %d\n", thread, status.Topic, status.Status.Title(), status.Current, paused, strings.Join(order, " → "), lines)
 	return nil
 }
 
@@ -657,14 +660,8 @@ func (a *App) moderateCommand(rootPath *string) *cobra.Command {
 	cmd.AddCommand(
 		simpleName("next", substrate.SetNext),
 		simpleName("invite", func(space *substrate.Space, thread, name substrate.Name) error {
-			if _, err := space.Participant(name); err != nil {
-				var unknown *substrate.UnknownParticipantError
-				if !errors.As(err, &unknown) {
-					return err
-				}
-				if err := space.AddParticipant(name, substrate.Agent); err != nil {
-					return err
-				}
+			if _, err := space.EnsureParticipant(name); err != nil {
+				return err
 			}
 			return substrate.Invite(space, thread, name)
 		}),
@@ -706,7 +703,7 @@ func (a *App) moderateCommand(rootPath *string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		order, err := parseNames(orderValues)
+		order, err := substrate.ParseNames(orderValues)
 		if err != nil {
 			return err
 		}
@@ -743,7 +740,7 @@ func (a *App) doctorCommand(rootPath *string) *cobra.Command {
 			defer cancel()
 			reported, versionErr := exec.CommandContext(versionCtx, installed, "--version").CombinedOutput()
 			installedVersion := strings.TrimSpace(string(reported))
-			if versionErr != nil || !strings.Contains(installedVersion, version.Version) || !strings.Contains(installedVersion, "go") {
+			if versionErr != nil || !strings.Contains(installedVersion, version.Version) || !strings.Contains(installedVersion, version.Runtime) {
 				if installedVersion == "" {
 					installedVersion = "version unavailable"
 				}
@@ -790,41 +787,8 @@ func (a *App) versionCommand() *cobra.Command {
 	}}
 }
 
-func parseNames(values []string) ([]substrate.Name, error) {
-	var names []substrate.Name
-	for _, value := range values {
-		for _, raw := range strings.Split(value, ",") {
-			raw = strings.TrimSpace(raw)
-			if raw == "" {
-				continue
-			}
-			name, err := substrate.ParseName(raw)
-			if err != nil {
-				return nil, err
-			}
-			names = append(names, name)
-		}
-	}
-	return names, nil
-}
-func joinNames(names []substrate.Name, separator string) string {
-	parts := make([]string, len(names))
-	for i, name := range names {
-		parts[i] = name.String()
-	}
-	return strings.Join(parts, separator)
-}
-func titleStatus(status substrate.ThreadStatus) string {
-	text := string(status)
-	return strings.ToUpper(text[:1]) + text[1:]
-}
 func sortedKeys(values map[string]string) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(values))
 }
 
 func safeInt(value uint64) int {

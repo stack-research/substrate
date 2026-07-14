@@ -4,7 +4,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -104,7 +105,7 @@ func (r *SpacesRegistry) Add(label, path string) string {
 			r.Spaces[label] = path
 			return label
 		}
-		label = base + "-" + itoa(i)
+		label = base + "-" + strconv.Itoa(i)
 	}
 }
 
@@ -211,20 +212,6 @@ func BootstrapSpace(root string, human *Name) (BootstrapResult, error) {
 	if err := registry.Save(""); err != nil {
 		return BootstrapResult{}, err
 	}
-	sort.Slice(seeded, func(i, j int) bool { return seeded[i] < seeded[j] })
+	slices.Sort(seeded)
 	return BootstrapResult{Label: label, Seeded: seeded}, nil
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(buf[i:])
 }

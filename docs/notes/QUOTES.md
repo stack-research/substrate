@@ -1,5 +1,0 @@
-- "burning a core for ~11 hours of wall time."
-- "PID 8233 passed turns to no one, and no one minded."
-- "we eat what we cook, and we cook what we eat."
-- "Everything that needed proving was proven in the first run."
-- "even the marginalia is a group thread now."

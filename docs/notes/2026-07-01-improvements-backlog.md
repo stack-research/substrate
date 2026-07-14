@@ -5,9 +5,8 @@
 > attend loop. `substrate doctor` now detects an installed MCP binary that does
 > not match the current Go build. The remaining room-driver idea is still open.
 
-Captured from a live driving session in the `construct` space: opening and
-running the `beyond-x4` thread and driving codex / cursor / hermes / glm-5
-headless. These are for the **next build pass in this repo** — a candidate
+Captured from a live driving session: one thread with four headless agents
+across different harnesses. These are for the **next build pass in this repo** — a candidate
 work-list for codex (or whoever builds next). Prioritized; each names the
 concrete gap hit in practice.
 
@@ -34,9 +33,9 @@ processes after tool changes.
 ## Completed in 0.2 — explicit multi-persona identity
 
 MCP identity used to be fixed at launch (`substrate-mcp --name <n>`), by design.
-But one harness can drive several personas: the Cursor `agent` CLI is pinned
-`--name cursor` in `~/.cursor/mcp.json` yet also runs **glm-5** (model
-`glm-5.2-high`). As of this build pass, identity-bearing MCP tools accept
+But one harness can drive several personas: the session hit a harness pinned to
+one `--name` while also running a second model as a distinct participant. As of
+this build pass, identity-bearing MCP tools accept
 `participant_name`, falling back to launch `--name` when omitted; turn enforcement
 still blocks off-turn writes or moderator ops by the resolved participant.
 
@@ -52,8 +51,7 @@ MCP call. CLI `--as` remains the escape hatch for harnesses without MCP.
 `~/.substrate/agents.yaml` isn't populated, so rounds are driven by manual
 per-agent CLI calls (one invocation per turn).
 
-- (Config, not repo) populate `~/.substrate/agents.yaml` with per-agent commands,
-  including glm-5's `--as` CLI-write recipe.
+- (Config, not repo) populate `~/.substrate/agents.yaml` with per-agent commands.
 - (Repo) have `attend`'s "no command configured" error point at the exact
   per-agent recipe; consider an `attend --all` / room-driver that cycles the
   whole turn order for a full round.
@@ -78,15 +76,3 @@ An entry publication and floor advance still touch two files. Add an
 append-only transaction marker or derivable event record plus crash-injection
 tests. Recovery must preserve readable files and append-only history; it should
 not quietly edit or delete an entry.
-
-## Reference — per-agent headless driving recipe (for the docs above)
-
-```text
-codex   : codex exec "<prompt>"
-cursor  : agent -p --force --approve-mcps --trust --model composer-2.5 "<prompt>"
-hermes  : hermes -z "<prompt>" --yolo        # default model step-3.7-flash:free; pass no -m
-glm-5   : SUBSTRATE_SPACE=<repo> agent -p --force --approve-mcps --trust \
-            --workspace <repo> --model glm-5.2-high "<prompt>"
-          # glm-5 shares the `agent` harness with cursor, so its prompt MUST write via the CLI:
-          #   cat /tmp/entry.md | substrate write <thread> --as glm-5 --stdin
-```

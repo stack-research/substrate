@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
+// ThreadStatus is a thread's lifecycle state: active or ended.
 type ThreadStatus string
 
 const (
@@ -34,6 +37,17 @@ func (s *ThreadStatus) UnmarshalYAML(node *yaml.Node) error {
 
 func (s ThreadStatus) MarshalYAML() (any, error) { return string(s), nil }
 
+// Title returns the status capitalized for display, e.g. "Active".
+func (s ThreadStatus) Title() string {
+	text := string(s)
+	if text == "" {
+		return ""
+	}
+	return strings.ToUpper(text[:1]) + text[1:]
+}
+
+// ThreadConfig is a thread's on-disk config.yaml: topic, membership, and the
+// floor position. Unknown YAML keys survive round-trips via Extra.
 type ThreadConfig struct {
 	Topic     string          `yaml:"topic"`
 	CreatedAt time.Time       `yaml:"created_at"`
@@ -45,6 +59,7 @@ type ThreadConfig struct {
 	Extra     map[string]any  `yaml:",inline"`
 }
 
+// LoadThread reads and validates a thread's config from disk.
 func LoadThread(space *Space, thread Name) (ThreadConfig, error) {
 	data, err := os.ReadFile(filepath.Join(space.ThreadDir(thread), ThreadConfigFile))
 	if errors.Is(err, os.ErrNotExist) {
@@ -72,6 +87,7 @@ func LoadThread(space *Space, thread Name) (ThreadConfig, error) {
 	return cfg, nil
 }
 
+// SaveThread writes a thread's config atomically.
 func SaveThread(space *Space, thread Name, cfg ThreadConfig) error {
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
@@ -80,6 +96,7 @@ func SaveThread(space *Space, thread Name, cfg ThreadConfig) error {
 	return writeAtomic(filepath.Join(space.ThreadDir(thread), ThreadConfigFile), data)
 }
 
+// Current returns the participant who holds the floor.
 func (c ThreadConfig) Current() Name {
 	idx := c.NextIndex
 	if idx < 0 || idx >= len(c.TurnOrder) {
@@ -88,8 +105,11 @@ func (c ThreadConfig) Current() Name {
 	return c.TurnOrder[idx]
 }
 
+// Paused reports whether an active thread is waiting on its moderator.
 func (c ThreadConfig) Paused() bool { return c.Status == Active && c.Current() == c.Moderator }
 
+// CreateThread makes a new thread with the moderator speaking first, followed
+// by turns in order (duplicates dropped). All participants must be registered.
 func CreateThread(space *Space, thread Name, topic string, moderator Name, turns []Name) (ThreadConfig, error) {
 	var created ThreadConfig
 	err := withFileLock(filepath.Join(space.SubstrateDir(), ".space.lock"), func() error {
@@ -105,7 +125,7 @@ func CreateThread(space *Space, thread Name, topic string, moderator Name, turns
 			if _, err := space.Participant(name); err != nil {
 				return err
 			}
-			if name != moderator && !containsName(order, name) {
+			if name != moderator && !slices.Contains(order, name) {
 				order = append(order, name)
 			}
 		}
@@ -122,13 +142,4 @@ func CreateThread(space *Space, thread Name, topic string, moderator Name, turns
 		return SaveThread(space, thread, created)
 	})
 	return created, err
-}
-
-func containsName(names []Name, target Name) bool {
-	for _, name := range names {
-		if name == target {
-			return true
-		}
-	}
-	return false
 }

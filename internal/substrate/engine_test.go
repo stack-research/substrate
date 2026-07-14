@@ -218,7 +218,7 @@ func TestConcurrentWritersOnlyOneWins(t *testing.T) {
 	for err := range errs {
 		if err == nil {
 			successes++
-		} else if IsNotYourTurn(err) {
+		} else if notYourTurn := (*NotYourTurnError)(nil); errors.As(err, &notYourTurn) {
 			rejected++
 		} else {
 			t.Fatal(err)

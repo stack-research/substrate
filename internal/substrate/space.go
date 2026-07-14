@@ -1,3 +1,6 @@
+// Package substrate implements the turn-based space engine and its on-disk
+// format: spaces, participants, threads, entries, and the floor-passing rules
+// that every front end (CLI, TUI, MCP server, HTTP proxy) shares.
 package substrate
 
 import (
@@ -5,7 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 
 	"gopkg.in/yaml.v3"
 )
@@ -17,6 +20,7 @@ const (
 	ThreadConfigFile = "config.yaml"
 )
 
+// ParticipantKind classifies a participant: human, agent, or other.
 type ParticipantKind string
 
 const (
@@ -59,8 +63,11 @@ type SpaceConfig struct {
 	Extra        map[string]any `yaml:",inline"`
 }
 
+// Space is a directory containing a .substrate tree. All state lives on disk;
+// a Space holds only the root path and re-reads files on every operation.
 type Space struct{ root string }
 
+// InitSpace creates the .substrate tree under root; it fails if one exists.
 func InitSpace(root string) (*Space, error) {
 	root = filepath.Clean(root)
 	configPath := filepath.Join(root, SpaceConfigFile)
@@ -79,6 +86,7 @@ func InitSpace(root string) (*Space, error) {
 	return space, nil
 }
 
+// OpenSpace opens an existing space rooted at root.
 func OpenSpace(root string) (*Space, error) {
 	root = filepath.Clean(root)
 	info, err := os.Stat(filepath.Join(root, SpaceConfigFile))
@@ -117,6 +125,7 @@ func (s *Space) SaveConfig(cfg SpaceConfig) error {
 	return writeAtomic(filepath.Join(s.root, SpaceConfigFile), data)
 }
 
+// AddParticipant registers a new participant in the space config.
 func (s *Space) AddParticipant(name Name, kind ParticipantKind) error {
 	return withFileLock(filepath.Join(s.SubstrateDir(), ".space.lock"), func() error {
 		cfg, err := s.Config()
@@ -133,6 +142,7 @@ func (s *Space) AddParticipant(name Name, kind ParticipantKind) error {
 	})
 }
 
+// Participant looks up a registered participant by name.
 func (s *Space) Participant(name Name) (Participant, error) {
 	cfg, err := s.Config()
 	if err != nil {
@@ -146,6 +156,7 @@ func (s *Space) Participant(name Name) (Participant, error) {
 	return Participant{}, &UnknownParticipantError{Name: name.String()}
 }
 
+// ListThreads returns the space's thread names in sorted order.
 func (s *Space) ListThreads() ([]Name, error) {
 	entries, err := os.ReadDir(filepath.Join(s.root, ThreadsDir))
 	if errors.Is(err, os.ErrNotExist) {
@@ -167,6 +178,23 @@ func (s *Space) ListThreads() ([]Name, error) {
 			threads = append(threads, name)
 		}
 	}
-	sort.Slice(threads, func(i, j int) bool { return threads[i] < threads[j] })
+	slices.Sort(threads)
 	return threads, nil
+}
+
+// EnsureParticipant registers name as an agent if it is not yet a participant.
+// It reports whether a new registration happened.
+func (s *Space) EnsureParticipant(name Name) (bool, error) {
+	_, err := s.Participant(name)
+	if err == nil {
+		return false, nil
+	}
+	var unknown *UnknownParticipantError
+	if !errors.As(err, &unknown) {
+		return false, err
+	}
+	if err := s.AddParticipant(name, Agent); err != nil {
+		return false, err
+	}
+	return true, nil
 }

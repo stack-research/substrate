@@ -137,7 +137,7 @@ func TestBase64ToleranceAndKeys(t *testing.T) {
 	original := "markdown with + and unicode ü"
 	standard := base64.StdEncoding.EncodeToString([]byte(original))
 	for _, encoded := range []string{standard, strings.TrimRight(standard, "="), base64.RawURLEncoding.EncodeToString([]byte(original)), standard[:4] + "\n" + standard[4:]} {
-		got, err := DecodeBase64(encoded)
+		got, err := decodeBase64(encoded)
 		if err != nil || got != original {
 			t.Fatalf("decode %q = %q, %v", encoded, got, err)
 		}

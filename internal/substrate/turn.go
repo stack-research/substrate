@@ -1,11 +1,13 @@
 package substrate
 
 import (
-	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
+	"slices"
 )
 
+// TurnStatus is a read-only snapshot of a thread's floor state.
 type TurnStatus struct {
 	Thread    Name
 	Topic     string
@@ -17,6 +19,7 @@ type TurnStatus struct {
 	Quieted   map[Name]uint32
 }
 
+// Written reports the outcome of a successful WriteEntry.
 type Written struct {
 	Filename string
 	NoOp     bool
@@ -24,6 +27,7 @@ type Written struct {
 	Paused   bool
 }
 
+// GetTurnStatus loads a thread's current floor state from disk.
 func GetTurnStatus(space *Space, thread Name) (TurnStatus, error) {
 	cfg, err := LoadThread(space, thread)
 	if err != nil {
@@ -32,17 +36,19 @@ func GetTurnStatus(space *Space, thread Name) (TurnStatus, error) {
 	return TurnStatus{
 		Thread: thread, Topic: cfg.Topic, Status: cfg.Status, Current: cfg.Current(),
 		Moderator: cfg.Moderator, Paused: cfg.Paused(),
-		TurnOrder: append([]Name(nil), cfg.TurnOrder...), Quieted: cloneQuieted(cfg.Quieted),
+		TurnOrder: append([]Name(nil), cfg.TurnOrder...), Quieted: maps.Clone(cfg.Quieted),
 	}, nil
 }
 
+// WriteEntry appends one entry under the thread lock, enforcing that the floor
+// is the author's, then advances the turn (skipping quieted participants).
 func WriteEntry(space *Space, thread, author Name, content string) (Written, error) {
 	var written Written
 	err := withThreadLock(space, thread, func(cfg *ThreadConfig) error {
 		if cfg.Status == Ended {
 			return ErrEnded
 		}
-		if !containsName(cfg.TurnOrder, author) {
+		if !slices.Contains(cfg.TurnOrder, author) {
 			return &NotInThreadError{Name: author}
 		}
 		if cfg.Current() != author {
@@ -116,10 +122,13 @@ func mutateActive(space *Space, thread Name, fn func(*ThreadConfig) error) error
 	})
 }
 
+// SetTopic replaces an active thread's topic.
 func SetTopic(space *Space, thread Name, topic string) error {
 	return mutateActive(space, thread, func(cfg *ThreadConfig) error { cfg.Topic = topic; return nil })
 }
 
+// ReorderTurns replaces the speaking order, keeping the moderator first and
+// the current speaker's floor intact where possible.
 func ReorderTurns(space *Space, thread Name, newOrder []Name) error {
 	return mutateActive(space, thread, func(cfg *ThreadConfig) error {
 		current := cfg.Current()
@@ -128,7 +137,7 @@ func ReorderTurns(space *Space, thread Name, newOrder []Name) error {
 			if _, err := space.Participant(name); err != nil {
 				return err
 			}
-			if name != cfg.Moderator && !containsName(order, name) {
+			if name != cfg.Moderator && !slices.Contains(order, name) {
 				order = append(order, name)
 			}
 		}
@@ -136,7 +145,7 @@ func ReorderTurns(space *Space, thread Name, newOrder []Name) error {
 			return ErrTooFewParticipants
 		}
 		for name := range cfg.Quieted {
-			if !containsName(order, name) {
+			if !slices.Contains(order, name) {
 				delete(cfg.Quieted, name)
 			}
 		}
@@ -152,12 +161,13 @@ func ReorderTurns(space *Space, thread Name, newOrder []Name) error {
 	})
 }
 
+// Quiet makes name skip its next turns; zero turns lifts the quiet.
 func Quiet(space *Space, thread, name Name, turns uint32) error {
 	return mutateActive(space, thread, func(cfg *ThreadConfig) error {
 		if name == cfg.Moderator {
 			return ErrCannotQuietModerator
 		}
-		if !containsName(cfg.TurnOrder, name) {
+		if !slices.Contains(cfg.TurnOrder, name) {
 			return &NotInThreadError{Name: name}
 		}
 		if turns == 0 {
@@ -169,18 +179,20 @@ func Quiet(space *Space, thread, name Name, turns uint32) error {
 	})
 }
 
+// Invite appends a registered participant to the end of the turn order.
 func Invite(space *Space, thread, name Name) error {
 	return mutateActive(space, thread, func(cfg *ThreadConfig) error {
 		if _, err := space.Participant(name); err != nil {
 			return err
 		}
-		if !containsName(cfg.TurnOrder, name) {
+		if !slices.Contains(cfg.TurnOrder, name) {
 			cfg.TurnOrder = append(cfg.TurnOrder, name)
 		}
 		return nil
 	})
 }
 
+// SetNext hands the floor directly to name, lifting any quiet on it.
 func SetNext(space *Space, thread, name Name) error {
 	return mutateActive(space, thread, func(cfg *ThreadConfig) error {
 		for i, candidate := range cfg.TurnOrder {
@@ -194,10 +206,12 @@ func SetNext(space *Space, thread, name Name) error {
 	})
 }
 
+// EndThread marks a thread ended; no further entries are accepted.
 func EndThread(space *Space, thread Name) error {
 	return mutateActive(space, thread, func(cfg *ThreadConfig) error { cfg.Status = Ended; return nil })
 }
 
+// ResumeThread reactivates an ended thread with the floor on the moderator.
 func ResumeThread(space *Space, thread Name) error {
 	return withThreadLock(space, thread, func(cfg *ThreadConfig) error {
 		if cfg.Status != Ended {
@@ -209,6 +223,7 @@ func ResumeThread(space *Space, thread Name) error {
 	})
 }
 
+// RequireModerator errors with ErrNotModerator unless actor moderates thread.
 func RequireModerator(space *Space, thread, actor Name) error {
 	cfg, err := LoadThread(space, thread)
 	if err != nil {
@@ -218,17 +233,4 @@ func RequireModerator(space *Space, thread, actor Name) error {
 		return fmt.Errorf("%w: %s is the moderator", ErrNotModerator, cfg.Moderator)
 	}
 	return nil
-}
-
-func IsNotYourTurn(err error) bool {
-	var target *NotYourTurnError
-	return errors.As(err, &target)
-}
-
-func cloneQuieted(in map[Name]uint32) map[Name]uint32 {
-	out := make(map[Name]uint32, len(in))
-	for name, remaining := range in {
-		out[name] = remaining
-	}
-	return out
 }

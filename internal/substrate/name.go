@@ -57,6 +57,36 @@ func ParseName(raw string) (Name, error) {
 	return Name(raw), nil
 }
 
+// ParseNames parses a list of raw values into names. Each value may itself be
+// a comma-separated list; surrounding whitespace and empty items are ignored.
+func ParseNames(values []string) ([]Name, error) {
+	var names []Name
+	for _, value := range values {
+		for _, raw := range strings.Split(value, ",") {
+			raw = strings.TrimSpace(raw)
+			if raw == "" {
+				continue
+			}
+			name, err := ParseName(raw)
+			if err != nil {
+				return nil, err
+			}
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
+// JoinNames renders names as a single string with the given separator.
+func JoinNames(names []Name, separator string) string {
+	parts := make([]string, len(names))
+	for i, name := range names {
+		parts[i] = name.String()
+	}
+	return strings.Join(parts, separator)
+}
+
+// MustName parses raw and panics on failure; for tests and constants.
 func MustName(raw string) Name {
 	name, err := ParseName(raw)
 	if err != nil {

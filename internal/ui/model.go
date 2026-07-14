@@ -1,9 +1,9 @@
+// Package ui is the Bubble Tea TUI: a sidebar of rooms, a transcript viewport,
+// and a composer, kept fresh by an fsnotify watcher with a polling fallback.
 package ui
 
 import (
 	"errors"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +13,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/fsnotify/fsnotify"
 	"github.com/stack-research/substrate/internal/substrate"
+	"github.com/stack-research/substrate/internal/watcher"
 )
 
 type focus int
@@ -24,7 +25,12 @@ const (
 )
 
 type diskChangedMsg struct{}
+type diskPollMsg struct{}
+type watcherRetryMsg struct{}
+type watcherErrorMsg struct{ err error }
 type flashExpiredMsg struct{ id uint64 }
+
+const diskPollInterval = 10 * time.Second
 
 type newRoomForm struct {
 	fields [3]textarea.Model
@@ -57,6 +63,7 @@ type Model struct {
 	flashID     uint64
 	lastCtrlC   time.Time
 	reloadError error
+	watcher     *fsnotify.Watcher
 }
 
 func NewModel(space *substrate.Space, me substrate.Name) (*Model, error) {
@@ -85,7 +92,7 @@ func NewModel(space *substrate.Space, me substrate.Name) (*Model, error) {
 }
 
 func (m *Model) Init() tea.Cmd {
-	commands := []tea.Cmd{watchSpace(m.space.SubstrateDir()), tea.RequestBackgroundColor}
+	commands := []tea.Cmd{m.startWatcher(), pollDisk(), tea.RequestBackgroundColor}
 	if m.focus == focusComposer {
 		commands = append(commands, m.composer.Focus())
 	} else {
@@ -105,11 +112,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.styles = newStyles(m.dark)
 		m.refreshTranscript(true)
 	case diskChangedMsg:
-		atBottom := m.viewport.AtBottom()
-		if err := m.reload(atBottom); err != nil {
-			m.reloadError = err
-		}
-		cmds = append(cmds, watchSpace(m.space.SubstrateDir()))
+		m.reloadError = m.reload(m.viewport.AtBottom())
+		cmds = append(cmds, waitForDiskChange(m.watcher))
+	case diskPollMsg:
+		m.reloadError = m.reload(m.viewport.AtBottom())
+		cmds = append(cmds, pollDisk())
+	case watcherRetryMsg:
+		m.closeWatcher()
+		cmds = append(cmds, m.startWatcher())
+	case watcherErrorMsg:
+		m.reloadError = msg.err
+		m.closeWatcher()
+		cmds = append(cmds, retryWatcher())
 	case flashExpiredMsg:
 		if msg.id == m.flashID {
 			m.flash = ""
@@ -335,14 +349,8 @@ func (m *Model) runCommand(input string) (bool, error) {
 		if err != nil {
 			return true, err
 		}
-		if _, err := m.space.Participant(name); err != nil {
-			var unknown *substrate.UnknownParticipantError
-			if !errors.As(err, &unknown) {
-				return true, err
-			}
-			if err := m.space.AddParticipant(name, substrate.Agent); err != nil {
-				return true, err
-			}
+		if _, err := m.space.EnsureParticipant(name); err != nil {
+			return true, err
 		}
 		return true, substrate.Invite(m.space, thread, name)
 	case "/quiet":
@@ -466,14 +474,8 @@ func (m *Model) createRoom() tea.Cmd {
 		if err != nil {
 			return m.setFlash(err.Error(), true)
 		}
-		if _, err := m.space.Participant(participant); err != nil {
-			var unknown *substrate.UnknownParticipantError
-			if !errors.As(err, &unknown) {
-				return m.setFlash(err.Error(), true)
-			}
-			if err := m.space.AddParticipant(participant, substrate.Agent); err != nil {
-				return m.setFlash(err.Error(), true)
-			}
+		if _, err := m.space.EnsureParticipant(participant); err != nil {
+			return m.setFlash(err.Error(), true)
 		}
 		turns = append(turns, participant)
 	}
@@ -577,44 +579,54 @@ func (m *Model) resize() {
 	m.refreshTranscript(true)
 }
 
-func watchSpace(path string) tea.Cmd {
+func (m *Model) startWatcher() tea.Cmd {
+	if m.watcher != nil {
+		return waitForDiskChange(m.watcher)
+	}
+	w, err := watcher.NewRecursive(m.space.SubstrateDir())
+	if err != nil {
+		m.reloadError = err
+		return retryWatcher()
+	}
+	m.reloadError = nil
+	m.watcher = w
+	return waitForDiskChange(w)
+}
+
+func (m *Model) closeWatcher() {
+	if m.watcher != nil {
+		_ = m.watcher.Close()
+		m.watcher = nil
+	}
+}
+
+func waitForDiskChange(w *fsnotify.Watcher) tea.Cmd {
 	return func() tea.Msg {
-		watcher, err := fsnotify.NewWatcher()
-		if err != nil {
-			time.Sleep(time.Second)
-			return diskChangedMsg{}
+		if w == nil {
+			return watcherRetryMsg{}
 		}
-		defer watcher.Close()
-		if err := addRecursive(watcher, path); err != nil {
-			time.Sleep(time.Second)
-			return diskChangedMsg{}
-		}
-		for {
-			select {
-			case event := <-watcher.Events:
-				if event.Op&fsnotify.Create != 0 {
-					if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
-						_ = watcher.Add(event.Name)
-					}
-				}
-				return diskChangedMsg{}
-			case <-watcher.Errors:
-				return diskChangedMsg{}
+		select {
+		case event, ok := <-w.Events:
+			if !ok {
+				return watcherRetryMsg{}
 			}
+			watcher.TrackNewDirs(w, event)
+			return diskChangedMsg{}
+		case err, ok := <-w.Errors:
+			if !ok {
+				return watcherRetryMsg{}
+			}
+			return watcherErrorMsg{err: err}
 		}
 	}
 }
 
-func addRecursive(watcher *fsnotify.Watcher, root string) error {
-	return filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if entry.IsDir() {
-			return watcher.Add(path)
-		}
-		return nil
-	})
+func pollDisk() tea.Cmd {
+	return tea.Tick(diskPollInterval, func(time.Time) tea.Msg { return diskPollMsg{} })
+}
+
+func retryWatcher() tea.Cmd {
+	return tea.Tick(time.Second, func(time.Time) tea.Msg { return watcherRetryMsg{} })
 }
 
 func Run(space *substrate.Space, me substrate.Name) error {
@@ -622,6 +634,7 @@ func Run(space *substrate.Space, me substrate.Name) error {
 	if err != nil {
 		return err
 	}
+	defer model.closeWatcher()
 	_, err = tea.NewProgram(model).Run()
 	return err
 }

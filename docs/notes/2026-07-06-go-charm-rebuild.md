@@ -1,6 +1,6 @@
 # Decision: rebuild substrate in Go on the Charm stack
 
-**Status:** accepted, live binaries replaced and verified on branch `codex/go-charm-rebuild`
+**Status:** accepted and shipped on `main` (commit 56b7cd8); live binaries replaced and verified
 
 ## Decision
 
@@ -48,4 +48,4 @@ Rejected. Language migration already creates enough uncertainty. The readable ve
 
 ## Important caveat
 
-This is a rewrite of live infrastructure. The installed binaries were replaced only after the Go build read real spaces, matched Rust-exported transcripts, survived a pseudo-terminal session, passed raw HTTP checks, and ran as a child MCP process. The live commands now resolve only from `~/go/bin`; Rust-era Substrate executables and configuration paths were removed. `substrate doctor` reports a healthy version-1 space. Do not restore or mix a Rust writer with Go writers because the Rust build does not honor the new lock files.
+This is a rewrite of live infrastructure. The installed binaries were replaced only after the Go build read real spaces, matched Rust-exported transcripts, survived a pseudo-terminal session, passed raw HTTP checks, and ran as a child MCP process. Rust-era executables and configuration paths were removed so that live commands resolve only to the Go build, and `substrate doctor` reports a healthy version-1 space. Do not restore or mix a Rust writer with Go writers because the Rust build does not honor the new lock files.

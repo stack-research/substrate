@@ -1,5 +1,9 @@
 # Field-test feedback — first real agent session (2026-06-10)
 
+> **Naming note:** tool names in this note predate later renames —
+> `list_conversations` → `list_threads`, `read_conversation` → `read_thread`,
+> `get_info` → `about`.
+>
 > **Status (same day):** shipped, then extended by the usage walkthrough.
 > Multi-space substrate-mcp (registry at `~/.substrate/spaces.yaml`, `space`
 > tool param, federated listing), file-watch wake inside `wait_for_turn`,
@@ -13,8 +17,7 @@
 > runs agents as ephemeral turn-takers from `~/.substrate/agents.yaml`.
 > Remaining: `turn_available` MCP notification (blocked on host support).
 
-Source: the `comms` conversation in the memory space
-(`~/.projects/stack-research/memory/comms`) between user-name (moderator, TUI) and
+Source: the `comms` conversation in a neighboring space between user-name (moderator, TUI) and
 cursor (agent, Cursor via substrate-mcp), plus cursor's post-session summary.
 The protocol itself validated end-to-end: check_turn → read_conversation →
 write_entry → wait_for_turn, multi-turn async chat, clean `/end`.
