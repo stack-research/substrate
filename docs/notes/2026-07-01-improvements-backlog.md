@@ -10,6 +10,20 @@ across different harnesses. These are for the **next build pass in this repo** �
 work-list for codex (or whoever builds next). Prioritized; each names the
 concrete gap hit in practice.
 
+## P1 — make bounded context offers first-class
+
+A later multi-agent research room grew to roughly 10,000 transcript lines.
+Cold agents sometimes spent about half their context windows rereading history
+before reaching the current assignment. Stable `from_line` cursors solved much
+of the immediate problem, but the session exposed a larger product surface:
+entry-aligned bounded reads, reproducible snapshot ranges, deterministic entry
+manifests, `attend` context policies, and presentation receipts that never
+pretend presentation proves use.
+
+See [Long threads as context-memory instruments](2026-07-15-long-thread-context-memory.md)
+for the field finding, latent substrate primitives, design refusals, and a
+small-to-large experiment sequence.
+
 ## Completed in 0.2 — MCP thread creation
 
 The Go MCP server exposes `new_thread` through the same domain engine as the
