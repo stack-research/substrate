@@ -131,6 +131,34 @@ func TestInvalidReadCursorIsRejected(t *testing.T) {
 			t.Fatalf("from=%q: status=%d body=%s", raw, response.Code, body)
 		}
 	}
+	response, body := perform(t, handler, "/t/lab/write?key=secret&from=bad&text=pass")
+	if response.Code != http.StatusBadRequest || !strings.Contains(body, "1-based transcript line") {
+		t.Fatalf("invalid write cursor: status=%d body=%s", response.Code, body)
+	}
+}
+
+func TestEntryBoundedReadAndManifest(t *testing.T) {
+	space, thread := proxySpace(t)
+	handler := NewHandler(space, []Participant{{Name: substrate.MustName("kagi"), Key: "secret"}})
+	if _, err := substrate.WriteEntry(space, thread, substrate.MustName("user-name"), "first offer"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := substrate.WriteEntry(space, thread, substrate.MustName("kagi"), "second entry"); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := substrate.BuildTranscriptManifest(space, thread)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := url.QueryEscape(manifest.Entries[0].Filename)
+	response, body := perform(t, handler, "/t/lab?key=secret&from_entry="+first+"&through_entry="+first+"&nonce=bounded")
+	if response.Code != http.StatusOK || !strings.Contains(body, "first offer") || strings.Contains(body, "second entry") || !strings.Contains(body, "actual entries:") || !strings.Contains(body, "next entry:") {
+		t.Fatalf("bounded proxy read: status=%d\n%s", response.Code, body)
+	}
+	response, body = perform(t, handler, "/t/lab?key=secret&manifest=1&nonce=manifest")
+	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "application/json; charset=utf-8" || !strings.Contains(body, `"thread_version": 2`) || !strings.Contains(body, `"sha256"`) {
+		t.Fatalf("proxy manifest: status=%d\n%s", response.Code, body)
+	}
 }
 
 func TestBase64ToleranceAndKeys(t *testing.T) {

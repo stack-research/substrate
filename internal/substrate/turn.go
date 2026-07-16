@@ -64,12 +64,36 @@ func WriteEntry(space *Space, thread, author Name, content string) (Written, err
 		if err != nil {
 			return err
 		}
-		if err := writeAtomic(filepath.Join(space.ThreadDir(thread), filename), data); err != nil {
+		_, beforeData, err := loadThreadFile(space, thread)
+		if err != nil {
 			return err
 		}
 		advance(cfg)
-		if err := SaveThread(space, thread, *cfg); err != nil {
+		afterData, err := encodeThreadConfig(*cfg)
+		if err != nil {
+			return err
+		}
+		transaction, err := beginEntryTransaction(space, thread, filename, beforeData, afterData)
+		if err != nil {
+			return err
+		}
+		if err := runWriteEntryPhaseHook("after-intent"); err != nil {
+			return err
+		}
+		if err := writeAtomic(filepath.Join(space.ThreadDir(thread), filename), data); err != nil {
+			return err
+		}
+		if err := runWriteEntryPhaseHook("after-entry"); err != nil {
+			return err
+		}
+		if err := writeAtomic(filepath.Join(space.ThreadDir(thread), ThreadConfigFile), afterData); err != nil {
 			return fmt.Errorf("entry %s was recorded but advancing the floor failed: %w", filename, err)
+		}
+		if err := runWriteEntryPhaseHook("after-config"); err != nil {
+			return err
+		}
+		if err := finishEntryTransaction(space, thread, transaction, "committed"); err != nil {
+			return fmt.Errorf("entry %s and floor advance were recorded but finalizing recovery metadata failed: %w", filename, err)
 		}
 		written = Written{Filename: filename, NoOp: noOp, Next: cfg.Current(), Paused: cfg.Paused()}
 		return nil
@@ -79,11 +103,14 @@ func WriteEntry(space *Space, thread, author Name, content string) (Written, err
 
 func withThreadLock(space *Space, thread Name, mutate func(*ThreadConfig) error) error {
 	// Validate before flock.New so an unknown name never creates a directory.
-	if _, err := LoadThread(space, thread); err != nil {
+	if _, _, err := loadThreadFile(space, thread); err != nil {
 		return err
 	}
 	return withFileLock(filepath.Join(space.ThreadDir(thread), ".turn.lock"), func() error {
-		cfg, err := LoadThread(space, thread)
+		if err := recoverEntryTransactionsLocked(space, thread); err != nil {
+			return err
+		}
+		cfg, _, err := loadThreadFile(space, thread)
 		if err != nil {
 			return err
 		}

@@ -5,6 +5,7 @@ package cli
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -46,7 +47,7 @@ func (a *App) Root() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "substrate",
 		Short:         "Turn-based group conversations between humans, agents, and anything else",
-		Version:       version.Version + " (" + version.Runtime + ")",
+		Version:       version.Full() + " (" + version.Runtime + ")",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE:          func(cmd *cobra.Command, _ []string) error { return a.runTUI(rootPath, "") },
@@ -58,7 +59,7 @@ func (a *App) Root() *cobra.Command {
 	root.AddCommand(
 		a.initCommand(&rootPath), a.addCommand(&rootPath), a.newCommand(&rootPath),
 		a.statusCommand(&rootPath), a.writeCommand(&rootPath), a.readCommand(&rootPath),
-		a.briefCommand(&rootPath), a.serveCommand(&rootPath), a.spacesCommand(),
+		a.manifestCommand(&rootPath), a.briefCommand(&rootPath), a.serveCommand(&rootPath), a.spacesCommand(),
 		a.attendCommand(), a.watchCommand(&rootPath), a.tuiCommand(&rootPath),
 		a.moderateCommand(&rootPath), a.doctorCommand(&rootPath), a.versionCommand(),
 	)
@@ -293,9 +294,17 @@ func (a *App) writeCommand(rootPath *string) *cobra.Command {
 
 func (a *App) readCommand(rootPath *string) *cobra.Command {
 	var last, from uint64
+	var fromEntry, throughEntry string
+	var metadata bool
 	cmd := &cobra.Command{Use: "read <thread>", Short: "Read a clean transcript", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		if cmd.Flags().Changed("last") && cmd.Flags().Changed("from") {
 			return errors.New("--last and --from are mutually exclusive")
+		}
+		if cmd.Flags().Changed("from") && from == 0 {
+			return errors.New("--from is a 1-based transcript line and must be at least 1")
+		}
+		if (cmd.Flags().Changed("last") || cmd.Flags().Changed("from")) && (fromEntry != "" || throughEntry != "") {
+			return errors.New("line windows and entry cursors are mutually exclusive")
 		}
 		space, err := substrate.OpenSpace(*rootPath)
 		if err != nil {
@@ -314,16 +323,65 @@ func (a *App) readCommand(rootPath *string) *cobra.Command {
 			value := safeInt(from)
 			window.FromLine = &value
 		}
-		text, _, err := substrate.ReadTranscript(space, thread, window)
+		window.FromEntry = fromEntry
+		window.ThroughEntry = throughEntry
+		result, err := substrate.ReadTranscriptSnapshot(space, thread, window)
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(a.Out, text)
+		fmt.Fprintln(a.Out, result.Text)
+		if metadata {
+			fmt.Fprint(a.Out, formatReadMetadata(result))
+		}
 		return nil
 	}}
 	cmd.Flags().Uint64Var(&last, "last", 0, "last N transcript lines")
 	cmd.Flags().Uint64Var(&from, "from", 0, "read from this 1-based line")
+	cmd.Flags().StringVar(&fromEntry, "from-entry", "", "read from this immutable entry filename")
+	cmd.Flags().StringVar(&throughEntry, "through-entry", "", "stop at this immutable entry filename")
+	cmd.Flags().BoolVar(&metadata, "meta", false, "print captured snapshot and actual range metadata")
 	return cmd
+}
+
+func (a *App) manifestCommand(rootPath *string) *cobra.Command {
+	return &cobra.Command{Use: "manifest <thread>", Short: "Print the deterministic transcript entry manifest", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, args []string) error {
+		space, err := substrate.OpenSpace(*rootPath)
+		if err != nil {
+			return err
+		}
+		thread, err := substrate.ParseName(args[0])
+		if err != nil {
+			return err
+		}
+		manifest, err := substrate.BuildTranscriptManifest(space, thread)
+		if err != nil {
+			return err
+		}
+		encoder := json.NewEncoder(a.Out)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(manifest)
+	}}
+}
+
+func formatReadMetadata(result substrate.TranscriptRead) string {
+	var out strings.Builder
+	fmt.Fprintf(&out, "--- snapshot ---\nthread version: %d\ntotal lines: %d\nbytes returned: %d\n", result.Manifest.Version, result.Manifest.TotalLines, result.ByteLength)
+	if result.LegacyLineWindow {
+		out.WriteString("actual entries: (legacy line window; not entry-aligned)\n")
+	} else if result.FirstEntry == "" {
+		out.WriteString("actual entries: (none)\n")
+	} else {
+		fmt.Fprintf(&out, "actual entries: %s through %s\nactual lines: %d through %d\n", result.FirstEntry, result.LastEntry, result.StartLine, result.EndLine)
+		fmt.Fprintf(&out, "context offer: --from-entry %s --through-entry %s\n", result.FirstEntry, result.LastEntry)
+	}
+	if result.LegacyLineWindow {
+		out.WriteString("next entry: (use the reported total line count for incremental continuation)\n")
+	} else if result.NextEntry == "" {
+		out.WriteString("next entry: (caught up at captured snapshot)\n")
+	} else {
+		fmt.Fprintf(&out, "next entry: %s\n", result.NextEntry)
+	}
+	return out.String()
 }
 
 func (a *App) briefCommand(rootPath *string) *cobra.Command {
@@ -500,15 +558,22 @@ func (a *App) spacesRemoveCommand() *cobra.Command {
 }
 
 func (a *App) attendCommand() *cobra.Command {
-	var command string
+	var command, contextPolicy, room, fromEntry, throughEntry string
 	cmd := &cobra.Command{Use: "attend <name>", Short: "Run an agent whenever it gets the floor", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		name, err := substrate.ParseName(args[0])
 		if err != nil {
 			return err
 		}
-		return watcher.Attend(cmd.Context(), name, command, a.Out, a.ErrOut)
+		return watcher.Attend(cmd.Context(), name, watcher.AttendOptions{
+			Command: command, Context: contextPolicy, Room: room,
+			FromEntry: fromEntry, ThroughEntry: throughEntry,
+		}, a.Out, a.ErrOut)
 	}}
 	cmd.Flags().StringVar(&command, "exec", "", "one-shot harness command")
+	cmd.Flags().StringVar(&contextPolicy, "context", "", "context policy: full or incremental (defaults to agents.yaml, then full)")
+	cmd.Flags().StringVar(&room, "room", "", "limit attendance to space-label/thread (required for explicit entry bounds)")
+	cmd.Flags().StringVar(&fromEntry, "from-entry", "", "explicit context offer start entry")
+	cmd.Flags().StringVar(&throughEntry, "through-entry", "", "explicit context offer ceiling entry")
 	return cmd
 }
 
@@ -733,14 +798,15 @@ func (a *App) moderateCommand(rootPath *string) *cobra.Command {
 func (a *App) doctorCommand(rootPath *string) *cobra.Command {
 	return &cobra.Command{Use: "doctor", Short: "Report runtime, install, and space health", Args: cobra.NoArgs, RunE: func(_ *cobra.Command, _ []string) error {
 		executable, _ := os.Executable()
-		fmt.Fprintf(a.Out, "substrate version: %s\nruntime: %s\nexecutable: %s\nhome: %s\n", version.Version, version.Runtime, executable, substrate.HomeDir())
+		buildVersion := version.Full()
+		fmt.Fprintf(a.Out, "substrate version: %s\nruntime: %s\nexecutable: %s\nhome: %s\n", buildVersion, version.Runtime, executable, substrate.HomeDir())
 		if installed, err := exec.LookPath("substrate-mcp"); err == nil {
 			fmt.Fprintf(a.Out, "substrate-mcp: %s\n", installed)
 			versionCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			reported, versionErr := exec.CommandContext(versionCtx, installed, "--version").CombinedOutput()
 			installedVersion := strings.TrimSpace(string(reported))
-			if versionErr != nil || !strings.Contains(installedVersion, version.Version) || !strings.Contains(installedVersion, version.Runtime) {
+			if versionErr != nil || !strings.Contains(installedVersion, buildVersion) || !strings.Contains(installedVersion, version.Runtime) {
 				if installedVersion == "" {
 					installedVersion = "version unavailable"
 				}
@@ -783,7 +849,7 @@ func (a *App) doctorCommand(rootPath *string) *cobra.Command {
 
 func (a *App) versionCommand() *cobra.Command {
 	return &cobra.Command{Use: "version", Args: cobra.NoArgs, Run: func(_ *cobra.Command, _ []string) {
-		fmt.Fprintf(a.Out, "substrate %s (%s)\n", version.Version, version.Runtime)
+		fmt.Fprintf(a.Out, "substrate %s (%s)\n", version.Full(), version.Runtime)
 	}}
 }
 

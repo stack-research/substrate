@@ -6,6 +6,7 @@ package proxy
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -35,16 +36,23 @@ func BriefText(space *substrate.Space, thread substrate.Name, forName *substrate
 	if err != nil {
 		return "", err
 	}
-	transcript, totalLines, err := substrate.ReadTranscript(space, thread, window)
+	read, err := substrate.ReadTranscriptSnapshot(space, thread, window)
 	if err != nil {
 		return "", err
 	}
+	transcript := read.Text
+	totalLines := read.Manifest.TotalLines
 	fromLine := 1
 	if window.FromLine != nil {
 		fromLine = *window.FromLine
+	} else if read.StartLine > 0 {
+		fromLine = read.StartLine
 	}
 	nextLine := totalLines + 1
-	version := substrate.ThreadVersion(space, thread)
+	if (window.FromEntry != "" || window.ThroughEntry != "") && read.EndLine > 0 {
+		nextLine = read.EndLine + 1
+	}
+	version := read.Manifest.Version
 	participant := "not specified"
 	if forName != nil {
 		participant = forName.String()
@@ -72,6 +80,14 @@ func BriefText(space *substrate.Space, thread substrate.Name, forName *substrate
 	fmt.Fprintf(&out, "SUBSTRATE THREAD\n================\nparticipant: %s\nthread: %s\ntopic: %s\n", participant, thread, status.Topic)
 	fmt.Fprintf(&out, "conversation: turn-based group; append-only markdown addressed to everyone\nstatus: %s\n", status.Status.Title())
 	fmt.Fprintf(&out, "current turn: %s%s\nturn order: %s\ntranscript lines: %d\nshowing from line: %d\nnext read from line: %d\nthread version: %d\n", status.Current, yours, strings.Join(order, " -> "), totalLines, fromLine, nextLine, version)
+	if read.FirstEntry != "" {
+		fmt.Fprintf(&out, "actual entries: %s through %s\nactual lines: %d through %d\nbytes returned: %d\n", read.FirstEntry, read.LastEntry, read.StartLine, read.EndLine, read.ByteLength)
+		if read.NextEntry != "" {
+			fmt.Fprintf(&out, "next entry: %s\n", read.NextEntry)
+		} else {
+			out.WriteString("next entry: (caught up at captured snapshot)\n")
+		}
+	}
 	if len(urls) == 2 {
 		fmt.Fprintf(&out, "\nIMPORTANT: USE A NEW NONCE FOR EVERY REQUEST\n============================================\nBefore EVERY fetch - read or write - replace NONCE with a new random ASCII value. Never reuse a nonce, including for a retry. Reusing one can return an old cached page. The nonce defeats caches; it is not the thread version.\n\nTo read only lines added after this response, fetch this path on the same host as this page:\n%s&from=%d&nonce=NONCE\n\nThe from= value is a stable 1-based transcript line cursor. Keep the newest 'next read from line' value. Omit from= only when you intentionally need the full thread again.\n", urls[0], nextLine)
 	}
@@ -123,6 +139,18 @@ func NewHandler(space *substrate.Space, participants []Participant) http.Handler
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		if r.URL.Query().Get("manifest") == "1" {
+			manifest, err := substrate.BuildTranscriptManifest(space, thread)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			encoder := json.NewEncoder(w)
+			encoder.SetIndent("", "  ")
+			_ = encoder.Encode(manifest)
+			return
+		}
 		readURL, writeURL := participantURLs(thread, participant)
 		text, err := BriefText(space, thread, &participant.Name, window, readURL, writeURL)
 		if err != nil {
@@ -141,15 +169,31 @@ func participantURLs(thread substrate.Name, participant Participant) (readURL, w
 }
 
 func readWindow(query url.Values) (substrate.Window, error) {
-	if !query.Has("from") {
-		return substrate.Window{}, nil
+	window := substrate.Window{}
+	if query.Has("from") {
+		raw := strings.TrimSpace(query.Get("from"))
+		from, err := strconv.Atoi(raw)
+		if err != nil || from < 1 {
+			return substrate.Window{}, fmt.Errorf("invalid from=%q: use a 1-based transcript line such as from=1", raw)
+		}
+		window.FromLine = &from
 	}
-	raw := strings.TrimSpace(query.Get("from"))
-	from, err := strconv.Atoi(raw)
-	if err != nil || from < 1 {
-		return substrate.Window{}, fmt.Errorf("invalid from=%q: use a 1-based transcript line such as from=1", raw)
+	if query.Has("from_entry") {
+		window.FromEntry = strings.TrimSpace(query.Get("from_entry"))
+		if window.FromEntry == "" {
+			return substrate.Window{}, errors.New("invalid empty from_entry: pass an immutable entry filename from the manifest")
+		}
 	}
-	return substrate.Window{FromLine: &from}, nil
+	if query.Has("through_entry") {
+		window.ThroughEntry = strings.TrimSpace(query.Get("through_entry"))
+		if window.ThroughEntry == "" {
+			return substrate.Window{}, errors.New("invalid empty through_entry: pass an immutable entry filename from the manifest")
+		}
+	}
+	if window.FromLine != nil && (window.FromEntry != "" || window.ThroughEntry != "") {
+		return substrate.Window{}, errors.New("from line and entry cursors are mutually exclusive")
+	}
+	return window, nil
 }
 
 func route(u *url.URL) (substrate.Name, bool, bool) {
@@ -171,7 +215,11 @@ func route(u *url.URL) (substrate.Name, bool, bool) {
 }
 
 func handleWrite(w http.ResponseWriter, r *http.Request, space *substrate.Space, thread substrate.Name, participant Participant) {
-	window, _ := readWindow(r.URL.Query())
+	window, windowErr := readWindow(r.URL.Query())
+	if windowErr != nil {
+		http.Error(w, windowErr.Error(), http.StatusBadRequest)
+		return
+	}
 	refreshed := func(outcome string) string {
 		readURL, writeURL := participantURLs(thread, participant)
 		brief, err := BriefText(space, thread, &participant.Name, window, readURL, writeURL)

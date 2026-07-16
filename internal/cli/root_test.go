@@ -2,10 +2,13 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stack-research/substrate/internal/substrate"
 )
 
 func runCLI(t *testing.T, input string, args ...string) (string, error) {
@@ -56,6 +59,21 @@ func TestScriptableLifecycle(t *testing.T) {
 	if err != nil || !strings.Contains(output, "Opening context") || !strings.Contains(output, "Agent reply from stdin") {
 		t.Fatalf("read: %v\n%s", err, output)
 	}
+	output, err = runCLI(t, "", "--space", space, "manifest", "design")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest substrate.TranscriptManifest
+	if err := json.Unmarshal([]byte(output), &manifest); err != nil {
+		t.Fatalf("manifest json: %v\n%s", err, output)
+	}
+	if manifest.Version != 2 || len(manifest.Entries) != 2 || len(manifest.Entries[0].SHA256) != 64 {
+		t.Fatalf("manifest: %#v", manifest)
+	}
+	output, err = runCLI(t, "", "--space", space, "read", "design", "--from-entry", manifest.Entries[0].Filename, "--through-entry", manifest.Entries[0].Filename, "--meta")
+	if err != nil || !strings.Contains(output, "Opening context") || strings.Contains(output, "Agent reply from stdin") || !strings.Contains(output, "context offer: --from-entry") {
+		t.Fatalf("bounded read: %v\n%s", err, output)
+	}
 }
 
 func TestNoOpHiddenSpacesAndDoctor(t *testing.T) {
@@ -95,5 +113,13 @@ func TestWriteRequiresExactlyOneSource(t *testing.T) {
 	output, err := runCLI(t, "", "write", "room", "--as", "user-name")
 	if err == nil || !strings.Contains(err.Error(), "exactly one") {
 		t.Fatalf("expected source error: %v\n%s", err, output)
+	}
+}
+
+func TestReadRejectsZeroLineCursor(t *testing.T) {
+	t.Setenv("SUBSTRATE_HOME", filepath.Join(t.TempDir(), "home"))
+	output, err := runCLI(t, "", "read", "room", "--from", "0")
+	if err == nil || !strings.Contains(err.Error(), "1-based") {
+		t.Fatalf("expected cursor error: %v\n%s", err, output)
 	}
 }

@@ -39,7 +39,12 @@ func TestChildProcessStdioProtocol(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := substrate.CreateThread(space, substrate.MustName("lab"), "stdio protocol", substrate.MustName("user-name"), []substrate.Name{substrate.MustName("claude-a")}); err != nil {
+	thread := substrate.MustName("lab")
+	moderator := substrate.MustName("user-name")
+	if _, err := substrate.CreateThread(space, thread, "stdio protocol", moderator, []substrate.Name{substrate.MustName("claude-a")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := substrate.WriteEntry(space, thread, moderator, "stdio opening"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -64,5 +69,28 @@ func TestChildProcessStdioProtocol(t *testing.T) {
 	text := result.Content[0].(*mcp.TextContent).Text
 	if result.IsError || !strings.Contains(text, "thread: lab") || !strings.Contains(text, "topic: stdio protocol") {
 		t.Fatalf("result error=%v:\n%s", result.IsError, text)
+	}
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "transcript_manifest", Arguments: map[string]any{"thread": "lab"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text = result.Content[0].(*mcp.TextContent).Text
+	if result.IsError || !strings.Contains(text, `"thread_version": 1`) || !strings.Contains(text, `"sha256"`) {
+		t.Fatalf("manifest error=%v:\n%s", result.IsError, text)
+	}
+	manifest, err := substrate.BuildTranscriptManifest(space, thread)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := manifest.Entries[0].Filename
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "read_thread", Arguments: map[string]any{
+		"thread": "lab", "from_entry": entry, "through_entry": entry,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text = result.Content[0].(*mcp.TextContent).Text
+	if result.IsError || !strings.Contains(text, "stdio opening") || !strings.Contains(text, "replay with: from_entry=") {
+		t.Fatalf("bounded read error=%v:\n%s", result.IsError, text)
 	}
 }

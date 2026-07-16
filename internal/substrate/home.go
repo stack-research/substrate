@@ -12,10 +12,11 @@ import (
 )
 
 const (
-	IdentityFile     = "identity.yaml"
-	SpacesFile       = "spaces.yaml"
-	ParticipantsFile = "participants.yaml"
-	AgentsFile       = "agents.yaml"
+	IdentityFile      = "identity.yaml"
+	SpacesFile        = "spaces.yaml"
+	ParticipantsFile  = "participants.yaml"
+	AgentsFile        = "agents.yaml"
+	AttendCursorsFile = "attend-cursors.yaml"
 )
 
 func HomeDir() string {
@@ -145,26 +146,88 @@ func LoadParticipantTemplate() ([]Participant, error) {
 	return template.Participants, nil
 }
 
-type agentsFile struct {
-	Agents map[Name]struct {
-		Run string `yaml:"run"`
-	} `yaml:"agents,omitempty"`
+type AgentConfig struct {
+	Run     string `yaml:"run"`
+	Context string `yaml:"context,omitempty"`
 }
 
-func LoadAgentCommand(name Name) (string, bool, error) {
+type agentsFile struct {
+	Agents map[Name]AgentConfig `yaml:"agents,omitempty"`
+}
+
+func LoadAgentConfig(name Name) (AgentConfig, bool, error) {
 	data, err := os.ReadFile(filepath.Join(HomeDir(), AgentsFile))
 	if errors.Is(err, os.ErrNotExist) {
-		return "", false, nil
+		return AgentConfig{}, false, nil
 	}
 	if err != nil {
-		return "", false, err
+		return AgentConfig{}, false, err
 	}
 	var agents agentsFile
 	if err := yaml.Unmarshal(data, &agents); err != nil {
-		return "", false, err
+		return AgentConfig{}, false, err
 	}
 	entry, ok := agents.Agents[name]
-	return entry.Run, ok, nil
+	return entry, ok, nil
+}
+
+type AttendCursor struct {
+	LastEntry string `yaml:"last_entry,omitempty"`
+	NextLine  int    `yaml:"next_line,omitempty"`
+}
+
+type attendCursorsFile struct {
+	Cursors map[Name]map[string]AttendCursor `yaml:"cursors,omitempty"`
+}
+
+func LoadAttendCursor(name Name, roomKey string) (AttendCursor, bool, error) {
+	data, err := os.ReadFile(filepath.Join(HomeDir(), AttendCursorsFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return AttendCursor{}, false, nil
+	}
+	if err != nil {
+		return AttendCursor{}, false, err
+	}
+	var file attendCursorsFile
+	if err := yaml.Unmarshal(data, &file); err != nil {
+		return AttendCursor{}, false, err
+	}
+	rooms, ok := file.Cursors[name]
+	if !ok {
+		return AttendCursor{}, false, nil
+	}
+	cursor, ok := rooms[roomKey]
+	return cursor, ok, nil
+}
+
+func SaveAttendCursor(name Name, roomKey string, cursor AttendCursor) error {
+	home := HomeDir()
+	if home == "" {
+		return nil
+	}
+	return withFileLock(filepath.Join(home, ".attend-cursors.lock"), func() error {
+		path := filepath.Join(home, AttendCursorsFile)
+		file := attendCursorsFile{Cursors: make(map[Name]map[string]AttendCursor)}
+		if data, err := os.ReadFile(path); err == nil {
+			if err := yaml.Unmarshal(data, &file); err != nil {
+				return err
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if file.Cursors == nil {
+			file.Cursors = make(map[Name]map[string]AttendCursor)
+		}
+		if file.Cursors[name] == nil {
+			file.Cursors[name] = make(map[string]AttendCursor)
+		}
+		file.Cursors[name][roomKey] = cursor
+		data, err := yaml.Marshal(file)
+		if err != nil {
+			return err
+		}
+		return writeAtomic(path, data)
+	})
 }
 
 type BootstrapResult struct {

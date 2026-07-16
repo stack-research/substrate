@@ -3,8 +3,6 @@ package substrate
 import (
 	"fmt"
 	"os"
-	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -148,31 +146,11 @@ func nextTimestamp(dir string) (time.Time, error) {
 // LoadEntries reads a thread's visible entries in timestamp order, skipping
 // no-op turns and unparseable files.
 func LoadEntries(space *Space, thread Name) ([]Entry, error) {
-	if _, err := LoadThread(space, thread); err != nil {
-		return nil, err
-	}
-	dir := space.ThreadDir(thread)
-	dirEntries, err := os.ReadDir(dir)
+	snapshot, err := loadTranscriptSnapshot(space, thread)
 	if err != nil {
 		return nil, err
 	}
-	filenames := make([]string, 0, len(dirEntries))
-	for _, entry := range dirEntries {
-		filenames = append(filenames, entry.Name())
-	}
-	sort.Strings(filenames)
-	entries := make([]Entry, 0, len(filenames))
-	for _, filename := range filenames {
-		data, err := os.ReadFile(filepath.Join(dir, filename))
-		if err != nil {
-			continue
-		}
-		entry, ok := parseEntryFile(filename, data)
-		if ok && !entry.NoOp {
-			entries = append(entries, entry)
-		}
-	}
-	return entries, nil
+	return snapshot.entries, nil
 }
 
 // ThreadVersion counts a thread's entry files; it monotonically increases with

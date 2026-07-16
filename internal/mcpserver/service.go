@@ -4,6 +4,7 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -26,7 +27,7 @@ const (
 // (the integration test cross-checks the count against the live server).
 var ToolNames = []string{
 	"about", "check_turn", "end_thread", "invite", "list_threads", "new_thread", "quiet",
-	"read_thread", "reorder_turns", "resume_thread", "set_next", "set_topic", "wait_for_turn", "write_entry",
+	"read_thread", "reorder_turns", "resume_thread", "set_next", "set_topic", "transcript_manifest", "wait_for_turn", "write_entry",
 }
 
 type Service struct {
@@ -41,7 +42,7 @@ func New(source SpaceSource, defaultActor *substrate.Name, logger *slog.Logger) 
 
 func (s *Service) Server() *mcp.Server {
 	server := mcp.NewServer(
-		&mcp.Implementation{Name: "substrate-mcp", Version: version.Version},
+		&mcp.Implementation{Name: "substrate-mcp", Version: version.Full()},
 		&mcp.ServerOptions{Instructions: s.instructions(), Logger: s.Logger, Capabilities: &mcp.ServerCapabilities{}},
 	)
 	s.addTools(server)
@@ -157,10 +158,16 @@ type threadParams struct {
 	ParticipantName string `json:"participant_name,omitempty" jsonschema:"registered participant; defaults to the server --name"`
 }
 type readParams struct {
-	Space    string  `json:"space,omitempty"`
-	Thread   string  `json:"thread"`
-	LastN    *uint64 `json:"last_n,omitempty" jsonschema:"last N transcript lines"`
-	FromLine *uint64 `json:"from_line,omitempty" jsonschema:"1-based stable transcript line"`
+	Space        string  `json:"space,omitempty"`
+	Thread       string  `json:"thread"`
+	LastN        *uint64 `json:"last_n,omitempty" jsonschema:"last N transcript lines; incompatible with entry cursors"`
+	FromLine     *uint64 `json:"from_line,omitempty" jsonschema:"legacy 1-based transcript line; incompatible with entry cursors"`
+	FromEntry    string  `json:"from_entry,omitempty" jsonschema:"immutable entry filename at which a complete-entry context offer begins"`
+	ThroughEntry string  `json:"through_entry,omitempty" jsonschema:"immutable entry filename at which the captured context offer ends"`
+}
+type manifestParams struct {
+	Space  string `json:"space,omitempty"`
+	Thread string `json:"thread"`
 }
 type writeParams struct {
 	Space           string `json:"space,omitempty"`
@@ -209,20 +216,21 @@ type topicParams struct {
 }
 
 func (s *Service) addTools(server *mcp.Server) {
-	mcp.AddTool(server, &mcp.Tool{Name: "about", Description: "Start here: learn the substrate room protocol and available tools."}, s.about)
-	mcp.AddTool(server, &mcp.Tool{Name: "new_thread", Description: "Create a thread. Any registered space participant may create one; it opens on the moderator."}, s.newThread)
-	mcp.AddTool(server, &mcp.Tool{Name: "list_threads", Description: "List every visible thread with labeled slug, space, topic, status, and floor."}, s.listThreads)
-	mcp.AddTool(server, &mcp.Tool{Name: "read_thread", Description: "Read the append-only shared transcript. No-op turns are omitted; line cursors are stable."}, s.readThread)
-	mcp.AddTool(server, &mcp.Tool{Name: "write_entry", Description: "Write on your turn. Use exactly pass, no-op, or ... to yield invisibly."}, s.writeEntry)
-	mcp.AddTool(server, &mcp.Tool{Name: "check_turn", Description: "Check floor, pause, order, and transcript line count."}, s.checkTurn)
-	mcp.AddTool(server, &mcp.Tool{Name: "wait_for_turn", Description: "Wait for your floor. Timeout means still waiting; call again until your turn or Ended."}, s.waitForTurn)
-	mcp.AddTool(server, &mcp.Tool{Name: "set_next", Description: "Moderator only: hand the floor directly to a participant."}, s.setNext)
-	mcp.AddTool(server, &mcp.Tool{Name: "invite", Description: "Moderator only: append a participant; unknown names are registered as agents."}, s.invite)
-	mcp.AddTool(server, &mcp.Tool{Name: "quiet", Description: "Moderator only: skip a participant for N turns; zero lifts quiet."}, s.quiet)
-	mcp.AddTool(server, &mcp.Tool{Name: "reorder_turns", Description: "Moderator only: replace speaking order; moderator remains first."}, s.reorderTurns)
-	mcp.AddTool(server, &mcp.Tool{Name: "set_topic", Description: "Moderator only: change the topic."}, s.setTopic)
-	mcp.AddTool(server, &mcp.Tool{Name: "end_thread", Description: "Moderator only: end the thread while preserving history."}, s.endThread)
-	mcp.AddTool(server, &mcp.Tool{Name: "resume_thread", Description: "Moderator only: reopen an ended thread on the moderator."}, s.resumeThread)
+	mcp.AddTool(server, &mcp.Tool{Name: "about", Description: "Start here: learn every room and moderator tool, why it exists, and the safe operating loop."}, s.about)
+	mcp.AddTool(server, &mcp.Tool{Name: "new_thread", Description: "Create and become responsible for a moderated room; returns a compact moderator playbook."}, s.newThread)
+	mcp.AddTool(server, &mcp.Tool{Name: "list_threads", Description: "Discover exact thread slugs, spaces, lifecycle state, and who currently owns the floor."}, s.listThreads)
+	mcp.AddTool(server, &mcp.Tool{Name: "read_thread", Description: "Read immutable testimony; entry cursors create reproducible bounded context offers while line cursors support incremental catch-up."}, s.readThread)
+	mcp.AddTool(server, &mcp.Tool{Name: "transcript_manifest", Description: "Get the mechanical entry index, hashes, line ranges, and captured version needed to assemble or verify a bounded context offer."}, s.transcriptManifest)
+	mcp.AddTool(server, &mcp.Tool{Name: "write_entry", Description: "Append testimony only while you own the floor; exact pass, no-op, or ... yields without visible transcript growth."}, s.writeEntry)
+	mcp.AddTool(server, &mcp.Tool{Name: "check_turn", Description: "Re-read filesystem truth immediately before acting: floor, pause, order, and transcript size."}, s.checkTurn)
+	mcp.AddTool(server, &mcp.Tool{Name: "wait_for_turn", Description: "Block efficiently until your floor; a timeout is not completion, so wait again until your turn or Ended."}, s.waitForTurn)
+	mcp.AddTool(server, &mcp.Tool{Name: "set_next", Description: "Moderator only: route the next expensive invocation to the participant suited to the current assignment."}, s.setNext)
+	mcp.AddTool(server, &mcp.Tool{Name: "invite", Description: "Moderator only: add a participant to the shared room and speaking order; unknown names become registered agents."}, s.invite)
+	mcp.AddTool(server, &mcp.Tool{Name: "quiet", Description: "Moderator only: skip a participant for a bounded number of future rounds without deleting membership or history."}, s.quiet)
+	mcp.AddTool(server, &mcp.Tool{Name: "reorder_turns", Description: "Moderator only: replace the recurring speaking order while preserving moderator-first review pauses."}, s.reorderTurns)
+	mcp.AddTool(server, &mcp.Tool{Name: "set_topic", Description: "Moderator only: update the room's current public scope without rewriting prior testimony."}, s.setTopic)
+	mcp.AddTool(server, &mcp.Tool{Name: "end_thread", Description: "Moderator only: close the room to further entries while preserving its complete append-only history."}, s.endThread)
+	mcp.AddTool(server, &mcp.Tool{Name: "resume_thread", Description: "Moderator only: reopen an ended room on the moderator for an explicit new phase."}, s.resumeThread)
 }
 
 func (s *Service) about(context.Context, *mcp.CallToolRequest, aboutParams) (*mcp.CallToolResult, any, error) {
@@ -230,7 +238,7 @@ func (s *Service) about(context.Context, *mcp.CallToolRequest, aboutParams) (*mc
 	if set, err := s.Source.Load(); err == nil && len(set.Spaces) > 0 {
 		spaces = strings.Join(set.Labels(), ", ")
 	}
-	return success(fmt.Sprintf("# substrate — a shared chalkboard\n\nserver version: %s\nruntime: %s\nadvertised tools: %s\n\nLocal-first, turn-based group conversations between humans, agents, and anything else. Entries are markdown, append-only, and addressed to the whole room. Default participant: %s. Spaces: %s.\n\n## The loop\n1. list_threads — find the exact thread slug and floor.\n2. wait_for_turn — wait; a TIMEOUT MEANS STILL WAITING, so call again.\n3. read_thread — catch up; use from_line = previous transcript total + 1.\n4. write_entry — reply, or send exactly pass for an invisible no-op.\n5. Repeat until status is Ended.\n\nModerators may use set_next, invite, quiet, reorder_turns, set_topic, end_thread, and resume_thread without consuming a turn.", version.Version, version.Runtime, strings.Join(ToolNames, ", "), s.defaultActorText(), spaces))
+	return success(fmt.Sprintf("# substrate — shared append-only rooms\n\nserver version: %s\nruntime: %s\nadvertised tools: %s\n\nDefault participant: %s. Spaces: %s. Entries address the whole room; runtime filenames own identity. Call about whenever this fixed control contract is unfamiliar. new_thread creates a room through the domain engine and returns the moderator's next steps.\n\n## Participant loop\n1. list_threads finds the exact slug, lifecycle, and floor.\n2. wait_for_turn blocks efficiently; A TIMEOUT MEANS STILL WAITING.\n3. check_turn re-reads filesystem truth immediately before acting.\n4. read_thread catches up. Use from_line for a small live delta, or from_entry + through_entry for a reproducible complete-entry offer.\n5. write_entry appends your reply; exact pass yields invisibly. Repeat until Ended.\n\n## Moderator playbook\nA moderator schedules attention, not truth. Use transcript_manifest to identify immutable entries and hashes; write an explicit assignment plus bounded context coordinates; then set_next to route the floor. The returned range proves only what was offered, never comprehension. Use invite for membership, quiet for bounded skips, reorder_turns for recurring order, set_topic for current scope, end_thread to close, and resume_thread to begin an explicit new phase. Keep context selection distinct from floor routing and from proxy turn/version stale-write protection.\n\n## Why the read tools differ\nfrom_line is a lightweight cursor into the growing rendered transcript. Entry cursors preserve whole immutable entries and through_entry freezes the offer ceiling. transcript_manifest is mechanical metadata, not a summary or authority claim.", version.Full(), version.Runtime, strings.Join(ToolNames, ", "), s.defaultActorText(), spaces))
 }
 
 func (s *Service) newThread(_ context.Context, _ *mcp.CallToolRequest, p newThreadParams) (*mcp.CallToolResult, any, error) {
@@ -261,7 +269,7 @@ func (s *Service) newThread(_ context.Context, _ *mcp.CallToolRequest, p newThre
 	if err != nil {
 		return reject(err)
 	}
-	return success(fmt.Sprintf("created thread: %s\ntopic: %s\nopening floor: %s\npaused on moderator: %s\nturn order: %s", thread, cfg.Topic, cfg.Current(), yesNo(cfg.Paused()), substrate.JoinNames(cfg.TurnOrder, " → ")))
+	return success(fmt.Sprintf("created thread: %s\ntopic: %s\nopening floor: %s\npaused on moderator: %s\nturn order: %s\n\nmoderator next steps:\n1. write the opening scope and assignment on your floor\n2. use transcript_manifest plus read_thread entry cursors when an attendee needs a bounded reproducible offer\n3. use set_next to route the floor; context selection and floor routing are separate\n4. re-check the floor before every action; end_thread when the work is actually complete", thread, cfg.Topic, cfg.Current(), yesNo(cfg.Paused()), substrate.JoinNames(cfg.TurnOrder, " → ")))
 }
 
 func (s *Service) listThreads(_ context.Context, _ *mcp.CallToolRequest, p actorParams) (*mcp.CallToolResult, any, error) {
@@ -314,6 +322,9 @@ func (s *Service) readThread(_ context.Context, _ *mcp.CallToolRequest, p readPa
 	if p.LastN != nil && p.FromLine != nil {
 		return reject(errors.New("last_n and from_line are mutually exclusive"))
 	}
+	if p.FromLine != nil && *p.FromLine == 0 {
+		return reject(errors.New("from_line is 1-based and must be at least 1"))
+	}
 	space, err := s.loadSpace(p.Space)
 	if err != nil {
 		return reject(err)
@@ -322,11 +333,52 @@ func (s *Service) readThread(_ context.Context, _ *mcp.CallToolRequest, p readPa
 	if err != nil {
 		return reject(err)
 	}
-	text, total, err := substrate.ReadTranscript(space, thread, substrate.Window{LastN: uintToInt(p.LastN), FromLine: uintToInt(p.FromLine)})
+	read, err := substrate.ReadTranscriptSnapshot(space, thread, substrate.Window{LastN: uintToInt(p.LastN), FromLine: uintToInt(p.FromLine), FromEntry: p.FromEntry, ThroughEntry: p.ThroughEntry})
 	if err != nil {
 		return reject(err)
 	}
-	return success(fmt.Sprintf("%s\n--- transcript lines: %d ---", text, total))
+	return success(read.Text + "\n" + formatSnapshot(read))
+}
+
+func (s *Service) transcriptManifest(_ context.Context, _ *mcp.CallToolRequest, p manifestParams) (*mcp.CallToolResult, any, error) {
+	space, err := s.loadSpace(p.Space)
+	if err != nil {
+		return reject(err)
+	}
+	thread, err := substrate.ParseName(p.Thread)
+	if err != nil {
+		return reject(err)
+	}
+	manifest, err := substrate.BuildTranscriptManifest(space, thread)
+	if err != nil {
+		return reject(err)
+	}
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return reject(err)
+	}
+	return success(string(data))
+}
+
+func formatSnapshot(read substrate.TranscriptRead) string {
+	var out strings.Builder
+	fmt.Fprintf(&out, "--- captured snapshot ---\nthread version: %d\ntranscript lines: %d\nbytes returned: %d\n", read.Manifest.Version, read.Manifest.TotalLines, read.ByteLength)
+	if read.LegacyLineWindow {
+		out.WriteString("actual entries: (legacy line window; not entry-aligned)\n")
+	} else if read.FirstEntry == "" {
+		out.WriteString("actual entries: (none)\n")
+	} else {
+		fmt.Fprintf(&out, "actual entries: %s through %s\nactual lines: %d through %d\n", read.FirstEntry, read.LastEntry, read.StartLine, read.EndLine)
+		fmt.Fprintf(&out, "replay with: from_entry=%s through_entry=%s\n", read.FirstEntry, read.LastEntry)
+	}
+	if read.LegacyLineWindow {
+		out.WriteString("next entry: (use transcript lines + 1 for incremental continuation)")
+	} else if read.NextEntry == "" {
+		out.WriteString("next entry: (caught up at captured snapshot)")
+	} else {
+		fmt.Fprintf(&out, "next entry: %s", read.NextEntry)
+	}
+	return out.String()
 }
 
 func (s *Service) writeEntry(_ context.Context, _ *mcp.CallToolRequest, p writeParams) (*mcp.CallToolResult, any, error) {

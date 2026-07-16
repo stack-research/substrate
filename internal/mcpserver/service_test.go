@@ -93,7 +93,7 @@ func TestAdvertisesProtocolAndConversationTools(t *testing.T) {
 	}
 
 	text, failed := call(t, session, "about", map[string]any{})
-	if failed || !strings.Contains(text, "server version: "+version.Version) || !strings.Contains(text, "TIMEOUT MEANS STILL WAITING") {
+	if failed || !strings.Contains(text, "server version: "+version.Full()) || !strings.Contains(text, "TIMEOUT MEANS STILL WAITING") || !strings.Contains(text, "Moderator playbook") {
 		t.Fatalf("about failed=%v:\n%s", failed, text)
 	}
 	text, failed = call(t, session, "check_turn", map[string]any{"thread": thread.String()})
@@ -121,8 +121,24 @@ func TestAdvertisesProtocolAndConversationTools(t *testing.T) {
 		t.Fatalf("no-op failed=%v:\n%s", failed, text)
 	}
 	text, failed = call(t, session, "read_thread", map[string]any{"thread": "lab"})
-	if failed || !strings.Contains(text, "Opening thought") || strings.Contains(text, "\npass\n") {
+	if failed || !strings.Contains(text, "Opening thought") || strings.Contains(text, "\npass\n") || !strings.Contains(text, "captured snapshot") {
 		t.Fatalf("read failed=%v:\n%s", failed, text)
+	}
+	manifest, err := substrate.BuildTranscriptManifest(space, thread)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, failed = call(t, session, "read_thread", map[string]any{"thread": "lab", "from_entry": manifest.Entries[0].Filename, "through_entry": manifest.Entries[0].Filename})
+	if failed || !strings.Contains(text, "moderator opening") || strings.Contains(text, "Opening thought") || !strings.Contains(text, "replay with: from_entry=") {
+		t.Fatalf("bounded read failed=%v:\n%s", failed, text)
+	}
+	text, failed = call(t, session, "transcript_manifest", map[string]any{"thread": "lab"})
+	if failed || !strings.Contains(text, `"thread_version": 3`) || !strings.Contains(text, `"sha256"`) {
+		t.Fatalf("manifest failed=%v:\n%s", failed, text)
+	}
+	text, failed = call(t, session, "read_thread", map[string]any{"thread": "lab", "from_line": 0})
+	if !failed || !strings.Contains(text, "1-based") {
+		t.Fatalf("zero cursor failed=%v:\n%s", failed, text)
 	}
 }
 
@@ -137,7 +153,7 @@ func TestPerCallIdentityNewThreadAndModeratorTools(t *testing.T) {
 		"participant_name": "claude-a", "name": "fresh-lab", "topic": "mcp-created room",
 		"moderator": "user-name", "turn_order": []string{"claude-a", "user-name", "codex-b"},
 	})
-	if failed || !strings.Contains(text, "created thread: fresh-lab") || !strings.Contains(text, "opening floor: user-name") {
+	if failed || !strings.Contains(text, "created thread: fresh-lab") || !strings.Contains(text, "opening floor: user-name") || !strings.Contains(text, "moderator next steps") {
 		t.Fatalf("new failed=%v:\n%s", failed, text)
 	}
 	text, failed = call(t, session, "set_topic", map[string]any{"thread": "fresh-lab", "participant_name": "claude-a", "topic": "nope"})

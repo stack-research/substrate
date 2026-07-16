@@ -57,3 +57,63 @@ func TestWindowBoundaries(t *testing.T) {
 		t.Fatalf("empty: %q %d", got, total)
 	}
 }
+
+func TestEntryAlignedSnapshotAndManifest(t *testing.T) {
+	space := groupSpace(t)
+	thread := MustName("bounded")
+	moderator := MustName("user-name")
+	agent := MustName("claude-a")
+	if _, err := CreateThread(space, thread, "bounded reads", moderator, []Name{agent}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := WriteEntry(space, thread, moderator, "first line\nsecond line")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteEntry(space, thread, agent, "pass"); err != nil {
+		t.Fatal(err)
+	}
+	last, err := WriteEntry(space, thread, moderator, "final entry")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	manifest, err := BuildTranscriptManifest(space, thread)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Version != 3 || manifest.VisibleEntries != 2 || manifest.NoOpEntries != 1 {
+		t.Fatalf("manifest counts: %#v", manifest)
+	}
+	if manifest.Entries[0].Filename != first.Filename || manifest.Entries[1].Filename != last.Filename {
+		t.Fatalf("manifest order: %#v", manifest.Entries)
+	}
+	if manifest.Entries[0].StartLine != 1 || manifest.Entries[0].EndLine != 4 || manifest.Entries[1].StartLine != 5 {
+		t.Fatalf("manifest lines: %#v", manifest.Entries)
+	}
+	if manifest.Entries[0].ByteLength == 0 || len(manifest.Entries[0].SHA256) != 64 {
+		t.Fatalf("manifest identity: %#v", manifest.Entries[0])
+	}
+
+	read, err := ReadTranscriptSnapshot(space, thread, Window{FromEntry: first.Filename, ThroughEntry: first.Filename})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(read.Text, "first line") || strings.Contains(read.Text, "final entry") {
+		t.Fatalf("bounded transcript: %q", read.Text)
+	}
+	if read.FirstEntry != first.Filename || read.LastEntry != first.Filename || read.NextEntry != last.Filename || read.StartLine != 1 || read.EndLine != 4 {
+		t.Fatalf("bounded metadata: %#v", read)
+	}
+	if read.Manifest.Version != 3 || read.ByteLength != len([]byte(read.Text)) {
+		t.Fatalf("snapshot metadata: %#v", read)
+	}
+
+	read, err = ReadTranscriptSnapshot(space, thread, Window{FromEntry: last.Filename})
+	if err != nil || strings.Contains(read.Text, "first line") || !strings.Contains(read.Text, "final entry") || read.NextEntry != "" {
+		t.Fatalf("tail read: %#v err=%v", read, err)
+	}
+	if _, err := ReadTranscriptSnapshot(space, thread, Window{FromEntry: "missing.md"}); err == nil {
+		t.Fatal("missing entry cursor should fail visibly")
+	}
+}

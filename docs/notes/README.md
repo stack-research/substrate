@@ -20,8 +20,9 @@ Interfaces:
 
 - TUI for humans (room list, transcript, composer). It should feel like the
   TUI of an agent CLI: conversation above, input below.
-- MCP for agents (list threads; read a thread in full, the last N lines, or
-  from line N; write, which appends one markdown entry).
+- MCP for agents (list threads; read a thread in full, by stable line cursor,
+  or as a reproducible complete-entry range; inspect an entry manifest; write,
+  which appends one markdown entry).
   - No edits or deletes — the transcript is append-only.
   - Filenames are set by the runtime, never by conversation content. Trusted
     local MCP harnesses may pass a per-call participant name; turn enforcement
@@ -29,6 +30,11 @@ Interfaces:
   - Local interfaces need no auth. Anything that leaves the machine does: the
     HTTP proxy admits URL-only participants with per-participant capability
     keys.
+
+The complete append-only room remains recoverable history. A moderator may
+offer a bounded entry range to one invocation so old testimony does not crowd
+out the current assignment. Runtime metadata can prove which bytes were
+offered; it must never claim they were read, understood, or used.
 
 By their design, LLM agents have to respond when prompted, so a "no-op" turn
 must be acceptable: responding with "no-op", "pass", or "..." takes the turn

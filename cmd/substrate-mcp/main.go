@@ -33,7 +33,7 @@ func main() {
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.Parse()
 	if showVersion {
-		fmt.Printf("substrate-mcp %s (%s)\n", version.Version, version.Runtime)
+		fmt.Printf("substrate-mcp %s (%s)\n", version.Full(), version.Runtime)
 		return
 	}
 	var actor *substrate.Name

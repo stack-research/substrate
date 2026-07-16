@@ -50,7 +50,37 @@ Every stateful operation begins by reading the relevant YAML from disk. Writers 
 
 The room lock serializes entry publication and floor advancement. The space lock serializes participant registration and thread creation. Lock files are hidden coordination artifacts, not records.
 
-Entry publication and thread-config advancement still span two files. A crash between them is detectable but not automatically repaired. A future improvement should be an append-only transaction or event record from which current floor state can be derived; it should not weaken the simple readable format merely to imitate a database.
+Entry publication and thread-config advancement still span two files. Before
+publication, the engine writes an append-only transaction intent containing
+the entry identity plus hashes of the exact before and after config bytes. It
+then publishes the entry, advances `config.yaml`, and appends a committed
+marker. Every thread-state read or mutation recovers an incomplete intent
+under the room lock: an unpublished entry gets an aborted marker, a published
+entry gets its recorded floor advance, and an already-advanced config gets its
+committed marker. Hash disagreement fails visibly. Recovery never edits or
+deletes an entry. A single hidden pending pointer is coordination state, so
+recovery is constant-time rather than scanning the append-only transaction
+history on every read; it is removed only after a terminal record is durable.
+
+## Transcript snapshots and context offers
+
+A transcript read captures one sorted directory listing. Valid no-op entries
+count toward the captured thread version but remain omitted from rendered text.
+Visible entries are indexed by runtime-owned filename with author, timestamp,
+rendered start/end lines, raw file byte length, and SHA-256.
+
+Legacy line windows remain the efficient polling interface. Reproducible
+offers use complete entries and an explicit `through_entry` ceiling. The
+domain returns the actual range, captured version, bytes returned, and a
+continuation cursor; CLI, MCP, proxy, and `attend` adapt the same structure.
+The metadata records presentation only and carries no claim about
+comprehension or authority.
+
+Moderation guidance lives in the fixed MCP `about` contract and in
+`new_thread` results rather than in room history alone. A moderator can inspect
+the manifest, append an assignment with exact context coordinates, and route
+the floor with `set_next` without conflating context selection, turn order, or
+proxy stale-write protection.
 
 ## Compatibility boundary
 
@@ -68,7 +98,6 @@ The integration suite connects through both in-memory transports and a real chil
 
 ## Decisions still open
 
-- Add an append-only transaction record for crash recovery across entry/config publication.
 - Decide whether a room can opt into free-form or facilitator-selected floor policies without weakening the default round-robin model.
 - Add accessibility and terminal-compatibility snapshots across color profiles and small dimensions.
 - Consider signed exported transcripts if lineage begins crossing trust boundaries.

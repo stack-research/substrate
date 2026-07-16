@@ -232,6 +232,130 @@ func TestConcurrentWritersOnlyOneWins(t *testing.T) {
 	}
 }
 
+func TestEntryTransactionRecoversPublishedEntryAndFloor(t *testing.T) {
+	space := groupSpace(t)
+	thread := groupThread(t, space)
+	writeEntryPhaseHook = func(phase string) error {
+		if phase == "after-entry" {
+			return errors.New("injected crash after entry publication")
+		}
+		return nil
+	}
+	defer func() { writeEntryPhaseHook = nil }()
+
+	if _, err := WriteEntry(space, thread, MustName("user-name"), "durable opening"); err == nil || !strings.Contains(err.Error(), "injected crash") {
+		t.Fatalf("write error = %v", err)
+	}
+	if ThreadVersion(space, thread) != 1 {
+		t.Fatalf("published entry disappeared: version=%d", ThreadVersion(space, thread))
+	}
+	before, _, err := loadThreadFile(space, thread)
+	if err != nil || before.Current() != MustName("user-name") {
+		t.Fatalf("expected stale pre-recovery floor: %#v err=%v", before, err)
+	}
+
+	writeEntryPhaseHook = nil
+	status, err := GetTurnStatus(space, thread)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Current != MustName("claude-a") {
+		t.Fatalf("floor was not recovered: %#v", status)
+	}
+	entries, err := LoadEntries(space, thread)
+	if err != nil || len(entries) != 1 || entries[0].Body != "durable opening" {
+		t.Fatalf("entry history changed during recovery: %#v err=%v", entries, err)
+	}
+	committed, err := filepath.Glob(filepath.Join(space.ThreadDir(thread), entryTransactionsDir, "*.committed"))
+	if err != nil || len(committed) != 1 {
+		t.Fatalf("committed markers=%v err=%v", committed, err)
+	}
+}
+
+func TestEntryTransactionAbortsIntentWithoutPublishedEntry(t *testing.T) {
+	space := groupSpace(t)
+	thread := groupThread(t, space)
+	writeEntryPhaseHook = func(phase string) error {
+		if phase == "after-intent" {
+			return errors.New("injected crash before entry publication")
+		}
+		return nil
+	}
+	defer func() { writeEntryPhaseHook = nil }()
+
+	if _, err := WriteEntry(space, thread, MustName("user-name"), "never published"); err == nil {
+		t.Fatal("expected injected failure")
+	}
+	if ThreadVersion(space, thread) != 0 {
+		t.Fatalf("unexpected entry after pre-publication crash: version=%d", ThreadVersion(space, thread))
+	}
+	writeEntryPhaseHook = nil
+	status, err := GetTurnStatus(space, thread)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Current != MustName("user-name") {
+		t.Fatalf("floor advanced without an entry: %#v", status)
+	}
+	aborted, err := filepath.Glob(filepath.Join(space.ThreadDir(thread), entryTransactionsDir, "*.aborted"))
+	if err != nil || len(aborted) != 1 {
+		t.Fatalf("aborted markers=%v err=%v", aborted, err)
+	}
+}
+
+func TestEntryTransactionRecoversPendingPointerBeforeIntent(t *testing.T) {
+	space := groupSpace(t)
+	thread := groupThread(t, space)
+	writeEntryPhaseHook = func(phase string) error {
+		if phase == "after-pending" {
+			return errors.New("injected crash before durable intent")
+		}
+		return nil
+	}
+	defer func() { writeEntryPhaseHook = nil }()
+
+	if _, err := WriteEntry(space, thread, MustName("user-name"), "never published"); err == nil {
+		t.Fatal("expected injected failure")
+	}
+	writeEntryPhaseHook = nil
+	if _, err := GetTurnStatus(space, thread); err != nil {
+		t.Fatal(err)
+	}
+	intents, err := filepath.Glob(filepath.Join(space.ThreadDir(thread), entryTransactionsDir, "*.yaml"))
+	if err != nil || len(intents) != 1 {
+		t.Fatalf("recovered intents=%v err=%v", intents, err)
+	}
+	aborted, err := filepath.Glob(filepath.Join(space.ThreadDir(thread), entryTransactionsDir, "*.aborted"))
+	if err != nil || len(aborted) != 1 {
+		t.Fatalf("aborted markers=%v err=%v", aborted, err)
+	}
+}
+
+func TestEntryTransactionFinalizesAlreadyAdvancedConfig(t *testing.T) {
+	space := groupSpace(t)
+	thread := groupThread(t, space)
+	writeEntryPhaseHook = func(phase string) error {
+		if phase == "after-config" {
+			return errors.New("injected crash before transaction finalization")
+		}
+		return nil
+	}
+	defer func() { writeEntryPhaseHook = nil }()
+
+	if _, err := WriteEntry(space, thread, MustName("user-name"), "published and advanced"); err == nil {
+		t.Fatal("expected injected failure")
+	}
+	writeEntryPhaseHook = nil
+	status, err := GetTurnStatus(space, thread)
+	if err != nil || status.Current != MustName("claude-a") {
+		t.Fatalf("advanced config was not retained: %#v err=%v", status, err)
+	}
+	committed, err := filepath.Glob(filepath.Join(space.ThreadDir(thread), entryTransactionsDir, "*.committed"))
+	if err != nil || len(committed) != 1 {
+		t.Fatalf("committed markers=%v err=%v", committed, err)
+	}
+}
+
 func TestUnknownYAMLFieldsSurviveMutation(t *testing.T) {
 	space := groupSpace(t)
 	thread := groupThread(t, space)

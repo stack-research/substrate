@@ -61,16 +61,32 @@ type ThreadConfig struct {
 
 // LoadThread reads and validates a thread's config from disk.
 func LoadThread(space *Space, thread Name) (ThreadConfig, error) {
-	data, err := os.ReadFile(filepath.Join(space.ThreadDir(thread), ThreadConfigFile))
-	if errors.Is(err, os.ErrNotExist) {
-		return ThreadConfig{}, &UnknownThreadError{Name: thread.String()}
-	}
-	if err != nil {
+	if _, _, err := loadThreadFile(space, thread); err != nil {
 		return ThreadConfig{}, err
 	}
 	var cfg ThreadConfig
+	err := withFileLock(filepath.Join(space.ThreadDir(thread), ".turn.lock"), func() error {
+		if err := recoverEntryTransactionsLocked(space, thread); err != nil {
+			return err
+		}
+		loaded, _, err := loadThreadFile(space, thread)
+		cfg = loaded
+		return err
+	})
+	return cfg, err
+}
+
+func loadThreadFile(space *Space, thread Name) (ThreadConfig, []byte, error) {
+	data, err := os.ReadFile(filepath.Join(space.ThreadDir(thread), ThreadConfigFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return ThreadConfig{}, nil, &UnknownThreadError{Name: thread.String()}
+	}
+	if err != nil {
+		return ThreadConfig{}, nil, err
+	}
+	var cfg ThreadConfig
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return ThreadConfig{}, err
+		return ThreadConfig{}, nil, err
 	}
 	if cfg.Status == "" {
 		cfg.Status = Active
@@ -79,22 +95,24 @@ func LoadThread(space *Space, thread Name) (ThreadConfig, error) {
 		cfg.Quieted = make(map[Name]uint32)
 	}
 	if len(cfg.TurnOrder) == 0 {
-		return ThreadConfig{}, ErrTooFewParticipants
+		return ThreadConfig{}, nil, ErrTooFewParticipants
 	}
 	if cfg.NextIndex < 0 || cfg.NextIndex >= len(cfg.TurnOrder) {
 		cfg.NextIndex = len(cfg.TurnOrder) - 1
 	}
-	return cfg, nil
+	return cfg, data, nil
 }
 
 // SaveThread writes a thread's config atomically.
 func SaveThread(space *Space, thread Name, cfg ThreadConfig) error {
-	data, err := yaml.Marshal(cfg)
+	data, err := encodeThreadConfig(cfg)
 	if err != nil {
 		return err
 	}
 	return writeAtomic(filepath.Join(space.ThreadDir(thread), ThreadConfigFile), data)
 }
+
+func encodeThreadConfig(cfg ThreadConfig) ([]byte, error) { return yaml.Marshal(cfg) }
 
 // Current returns the participant who holds the floor.
 func (c ThreadConfig) Current() Name {

@@ -10,7 +10,7 @@ across different harnesses. These are for the **next build pass in this repo** �
 work-list for codex (or whoever builds next). Prioritized; each names the
 concrete gap hit in practice.
 
-## P1 — make bounded context offers first-class
+## Completed in 0.2 — bounded context offers
 
 A later multi-agent research room grew to roughly 10,000 transcript lines.
 Cold agents sometimes spent about half their context windows rereading history
@@ -23,6 +23,15 @@ pretend presentation proves use.
 See [Long threads as context-memory instruments](2026-07-15-long-thread-context-memory.md)
 for the field finding, latent substrate primitives, design refusals, and a
 small-to-large experiment sequence.
+
+The earned core is now implemented: immutable entry-aligned ranges with an
+explicit ceiling, captured version and actual-range metadata, deterministic
+entry manifests, a documented Markdown handoff convention, and full/explicit/
+incremental `attend` policies. The MCP `about` and `new_thread` results carry a
+compact moderator playbook so context discipline does not depend on repeatedly
+rediscovering the field finding. Generalized selectors, semantic summaries,
+receipts, token accounting, and behavioral telemetry remain intentionally out
+of scope.
 
 ## Completed in 0.2 — MCP thread creation
 
@@ -84,9 +93,11 @@ layout replica. The next pass should protect that interface as terminals vary:
 - Run screen-reader and low-contrast audits. Color may reinforce author and
   floor state, but text and shape must continue to carry them.
 
-## P1 — make the two-file write boundary recoverable
+## Completed in 0.2 — recover the two-file write boundary
 
-An entry publication and floor advance still touch two files. Add an
-append-only transaction marker or derivable event record plus crash-injection
-tests. Recovery must preserve readable files and append-only history; it should
-not quietly edit or delete an entry.
+An entry publication and floor advance still touch two files. The engine now
+writes an append-only intent with before/after config hashes, then terminal
+committed or aborted metadata. Reads and writes recover incomplete publication
+under the room lock. Crash-injection tests cover failure before entry
+publication, after entry publication, and after config advancement; recovery
+never edits or deletes an entry.

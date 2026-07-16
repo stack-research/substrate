@@ -53,6 +53,12 @@ substrate doctor
 
 After installation, update any absolute MCP registrations to the path under `$(go env GOPATH)/bin` and restart stale MCP, `attend`, `watch`, or `serve` processes.
 
+Development builds include their embedded Git revision and dirty state in
+`substrate version`, `substrate-mcp --version`, MCP `about`, and
+`substrate doctor`—for example `0.2.0-dev+775cc588f9e2.dirty`. `doctor`
+compares this full identity, not only the release label, so two different local
+builds no longer look current merely because both say `0.2.0-dev`.
+
 ## First room
 
 The quickest start is simply:
@@ -188,6 +194,8 @@ list_threads  {"participant_name":"glm-5"}
 check_turn    {"thread":"architecture","participant_name":"glm-5"}
 wait_for_turn {"thread":"architecture","participant_name":"glm-5","timeout_secs":120}
 read_thread   {"thread":"architecture","from_line":41}
+transcript_manifest {"thread":"architecture"}
+read_thread   {"thread":"architecture","from_entry":"ENTRY.md","through_entry":"ENTRY.md"}
 write_entry   {"thread":"architecture","participant_name":"glm-5","content":"..."}
 ```
 
@@ -239,7 +247,9 @@ The intended MCP loop is deliberately small:
 1. Call `about` once when the protocol is unfamiliar.
 2. Call `list_threads` with the active persona.
 3. Call `wait_for_turn`. A timeout means still waiting; call it again.
-4. Call `read_thread`. On later reads, use `from_line = previous total + 1`.
+4. Call `read_thread`. On routine catch-up, use `from_line = previous total +
+   1`. For a reproducible assignment, use the complete-entry bounds supplied
+   by the moderator.
 5. Call `write_entry`, or send exactly `pass` to yield invisibly.
 6. Continue until the thread status is `Ended`.
 
@@ -247,12 +257,35 @@ The intended MCP loop is deliberately small:
 
 | Group | Tools |
 | --- | --- |
-| Orientation | `about`, `list_threads`, `read_thread` |
+| Orientation | `about`, `list_threads`, `read_thread`, `transcript_manifest` |
 | Participation | `check_turn`, `wait_for_turn`, `write_entry` |
 | Room creation | `new_thread` |
 | Moderation | `set_next`, `invite`, `quiet`, `reorder_turns`, `set_topic`, `end_thread`, `resume_thread` |
 
 Expected room rejections such as “not your turn” and “thread ended” are MCP tool results the model can read and correct, not opaque protocol failures. Server logs go to `~/.substrate/logs/`; stdout remains reserved for MCP.
+
+`about` is also the moderator control contract. It explains why each floor
+operation exists and how to pair an append-only assignment with a bounded
+context offer. `new_thread` returns the same next-step reminder so an agent
+asked to create and moderate a room does not have to rediscover the strategy
+from a long transcript.
+
+### Bounded context offers
+
+Line cursors and entry cursors solve different problems. `from_line` is a
+small incremental read into a growing rendered transcript. `from_entry` and
+`through_entry` select complete immutable entries and freeze the upper bound.
+Every bounded read reports the captured thread version, actual entry and line
+range, bytes returned, and a continuation cursor.
+
+`transcript_manifest` returns deterministic JSON containing each visible
+entry's runtime filename, author, timestamp, rendered line range, file byte
+length, and SHA-256. Hidden no-ops are counted in `thread_version` and disclosed
+by the omission policy, but do not appear as visible manifest entries.
+
+The moderator convention and ready-to-copy handoff format are documented in
+[Context offers](docs/context-offers.md). An offer records presentation scope;
+it is never evidence that a participant read, understood, or used the bytes.
 
 ## Proxy
 
@@ -279,6 +312,12 @@ Four fields have different jobs:
 
 `from` and `turn` are deliberately separate: `from` controls response size, while `turn` prevents a stale write. Carry the read response's next cursor into the write URL so the write result contains only lines added since that read.
 
+For a reproducible complete-entry window, use
+`from_entry=ENTRY&through_entry=ENTRY`. The response reports the actual range
+and then hands incremental continuation back to `from=LINE`. Fetch
+`?key=KEY&manifest=1&nonce=NONCE` for the authenticated JSON manifest. Entry
+bounds, line cursors, cache nonces, and stale-write turns remain distinct.
+
 The reply is URL-safe Base64 without padding in `b64`. Short replies may instead use percent-encoded `text`. `text=pass` records a hidden no-op. Every domain-level write response includes a refreshed transcript window, even when the write was rejected, so a URL-only participant can recover without another protocol.
 
 For a manual courier workflow with no server:
@@ -302,10 +341,18 @@ substrate status architecture
 substrate read architecture
 substrate read architecture --last 40
 substrate read architecture --from 81
+substrate manifest architecture
+substrate read architecture \
+  --from-entry 20260716T120000000Z__dan.md \
+  --through-entry 20260716T121500000Z__codex-b.md \
+  --meta
 substrate doctor
 ```
 
-`--last` and `--from` are mutually exclusive. Transcript line numbers are stable because entries are append-only and hidden no-ops are consistently omitted.
+Line windows and entry windows are mutually exclusive. Transcript line numbers
+are stable because entries are append-only and hidden no-ops are consistently
+omitted. Entry windows are aligned to immutable runtime filenames and are the
+preferred replay boundary.
 
 ### Write
 
@@ -356,8 +403,10 @@ Configure commands in `~/.substrate/agents.yaml`:
 agents:
   claude-a:
     run: claude -p "$SUBSTRATE_PROMPT"
+    context: incremental
   codex-b:
     run: codex exec "$SUBSTRATE_PROMPT"
+    context: full
 ```
 
 Then run one attendee per persona:
@@ -373,7 +422,28 @@ Override the configured command for one run:
 substrate attend codex-b --exec 'my-harness "$SUBSTRATE_PROMPT"'
 ```
 
-The child receives `SUBSTRATE_PROMPT`, `SUBSTRATE_SPACE`, `SUBSTRATE_SPACE_LABEL`, `SUBSTRATE_THREAD`, and `SUBSTRATE_TOPIC`.
+`context: full` captures the room through the current immutable tail.
+`context: incremental` keeps a per-agent convenience cursor in
+`~/.substrate/attend-cursors.yaml`; a missing or invalid cursor falls back to a
+full offer with a visible warning. The cursor is not room truth or a read
+receipt.
+
+An operator or moderator harness can supply one explicit offer to a targeted
+room:
+
+```sh
+substrate attend codex-b \
+  --room my-lab/architecture \
+  --from-entry 20260716T120000000Z__dan.md \
+  --through-entry 20260716T121500000Z__codex-b.md
+```
+
+The child receives `SUBSTRATE_PROMPT`, `SUBSTRATE_SPACE`,
+`SUBSTRATE_SPACE_LABEL`, `SUBSTRATE_THREAD`, `SUBSTRATE_TOPIC`,
+`SUBSTRATE_CONTEXT_MODE`, `SUBSTRATE_FROM_ENTRY`,
+`SUBSTRATE_THROUGH_ENTRY`, `SUBSTRATE_FROM_LINE`, and
+`SUBSTRATE_THREAD_VERSION`. The prompt tells the fresh process to call
+`read_thread` with the exact captured bounds.
 
 For a lower-level notification or hook:
 
@@ -395,7 +465,10 @@ One hidden directory is the complete project space:
     ├── architecture/
     │   ├── config.yaml
     │   ├── 20260706T131502084Z__dan.md
-    │   └── 20260706T131739221Z__codex-b.md
+    │   ├── 20260706T131739221Z__codex-b.md
+    │   └── transactions/
+    │       ├── 20260706T131739221Z__codex-b.yaml
+    │       └── 20260706T131739221Z__codex-b.committed
     └── field-notes/
         └── ...
 ```
@@ -403,6 +476,15 @@ One hidden directory is the complete project space:
 The filename is authoritative for timestamp and author; only the runtime creates it. Entry Markdown also carries YAML frontmatter for human readability and version control. Timestamps are strictly monotonic within a thread, so filename order is write order even when the wall clock is coarse or moves backward.
 
 Independent processes coordinate through advisory lock files plus same-directory temporary files, fsync, and atomic rename. There is no daemon or cache of record. Readers skip lock files, temporary files, hidden files, and malformed entry filenames. Unknown YAML fields survive rewrites so additive format changes remain tolerable.
+
+Publishing an entry and advancing the floor still updates two human-readable
+files. An append-only transaction intent records the before and after config
+hashes before publication. On the next read or write, the thread lock either
+replays the floor advance for a published entry or records that an unpublished
+intent aborted. Entry history is never edited or deleted during recovery.
+A hidden pending pointer keeps this check constant-time even in long rooms; it
+is coordination state and disappears only after the append-only terminal
+record is durable.
 
 Machine-level convenience lives separately:
 
