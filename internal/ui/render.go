@@ -203,6 +203,7 @@ func (m *Model) renderHelp() string {
 		m.styles.key.Render("Ctrl+S") + "           send entry or slash command",
 		m.styles.key.Render("Ctrl+N") + "           open a room",
 		m.styles.key.Render("Ctrl+B") + "           toggle room rail",
+		m.styles.key.Render("Ctrl+E") + "           show/hide ended rooms",
 		m.styles.key.Render("[ / ]") + "            previous / next room",
 		m.styles.key.Render("PgUp / PgDn") + "      scroll transcript",
 		m.styles.key.Render("Ctrl+K") + "           command palette",

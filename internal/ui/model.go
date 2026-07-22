@@ -54,6 +54,7 @@ type Model struct {
 	focus    focus
 
 	showSidebar bool
+	showEnded   bool
 	showHelp    bool
 	showPalette bool
 	newRoom     *newRoomForm
@@ -204,6 +205,15 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		m.showSidebar = !m.showSidebar
 		m.resize()
 		return nil, true
+	case "ctrl+e":
+		m.showEnded = !m.showEnded
+		if err := m.reload(true); err != nil {
+			return m.setFlash(err.Error(), true), true
+		}
+		if m.showEnded {
+			return m.setFlash("showing all rooms", false), true
+		}
+		return m.setFlash("hiding ended rooms", false), true
 	case "tab":
 		return m.setFocus((m.focus + 1) % 3), true
 	case "shift+tab":
@@ -513,9 +523,13 @@ func (m *Model) reload(stickBottom bool) error {
 	rooms := make([]substrate.TurnStatus, 0, len(threads))
 	for _, thread := range threads {
 		status, err := substrate.GetTurnStatus(m.space, thread)
-		if err == nil {
-			rooms = append(rooms, status)
+		if err != nil {
+			continue
 		}
+		if !m.showEnded && status.Status == substrate.Ended && status.Thread != selectedName {
+			continue
+		}
+		rooms = append(rooms, status)
 	}
 	m.rooms = rooms
 	if len(rooms) == 0 {

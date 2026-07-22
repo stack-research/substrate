@@ -149,7 +149,8 @@ func (a *App) newCommand(rootPath *string) *cobra.Command {
 }
 
 func (a *App) statusCommand(rootPath *string) *cobra.Command {
-	return &cobra.Command{Use: "status [thread]", Short: "Show space or thread status", Args: cobra.MaximumNArgs(1), RunE: func(_ *cobra.Command, args []string) error {
+	var all bool
+	cmd := &cobra.Command{Use: "status [thread]", Short: "Show space or thread status", Args: cobra.MaximumNArgs(1), RunE: func(_ *cobra.Command, args []string) error {
 		space, err := substrate.OpenSpace(*rootPath)
 		if err != nil {
 			return err
@@ -178,20 +179,34 @@ func (a *App) statusCommand(rootPath *string) *cobra.Command {
 			return nil
 		}
 		fmt.Fprintln(a.Out, "threads:")
+		shown, hidden := 0, 0
 		for _, thread := range threads {
 			status, err := substrate.GetTurnStatus(space, thread)
 			if err != nil {
 				fmt.Fprintf(a.Out, "  %s — unreadable: %v\n", thread, err)
 				continue
 			}
+			if !all && status.Status == substrate.Ended {
+				hidden++
+				continue
+			}
+			shown++
 			paused := ""
 			if status.Paused {
 				paused = " (paused on moderator)"
 			}
 			fmt.Fprintf(a.Out, "  %s — %s, turn: %s%s — %s\n", thread, status.Status.Title(), status.Current, paused, status.Topic)
 		}
+		if shown == 0 && hidden > 0 {
+			fmt.Fprintln(a.Out, "  (none active)")
+		}
+		if hidden > 0 {
+			fmt.Fprintf(a.Out, "%d ended thread(s) hidden — use --all to show\n", hidden)
+		}
 		return nil
 	}}
+	cmd.Flags().BoolVar(&all, "all", false, "include ended threads")
+	return cmd
 }
 
 func (a *App) printThreadStatus(space *substrate.Space, thread substrate.Name) error {
