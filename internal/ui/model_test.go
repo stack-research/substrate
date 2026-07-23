@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"image/color"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,32 @@ import (
 	"github.com/stack-research/substrate/internal/substrate"
 	"github.com/stack-research/substrate/internal/watcher"
 )
+
+func TestThemePaletteIsMonochrome(t *testing.T) {
+	for _, dark := range []bool{false, true} {
+		theme := newStyles(dark)
+		palette := map[string]color.Color{
+			"background": theme.background,
+			"surface":    theme.surface,
+			"text":       theme.text,
+			"muted":      theme.muted,
+			"faint":      theme.faint,
+			"accent":     theme.accent,
+			"accent2":    theme.accent2,
+			"good":       theme.good,
+			"danger":     theme.danger,
+		}
+		for name, value := range palette {
+			red, green, blue, _ := value.RGBA()
+			if red != green || green != blue {
+				t.Errorf("dark=%v %s is not monochrome: r=%d g=%d b=%d", dark, name, red, green, blue)
+			}
+		}
+		if !theme.subtle.GetFaint() || !theme.timestamp.GetFaint() {
+			t.Errorf("dark=%v muted text should use the terminal faint attribute", dark)
+		}
+	}
+}
 
 func testModel(t *testing.T) (*Model, *substrate.Space, substrate.Name) {
 	t.Helper()

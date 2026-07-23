@@ -7,8 +7,8 @@ import (
 )
 
 // styles deliberately keeps the room chrome quiet. The transcript is the
-// workspace; color and spacing establish hierarchy, with the composer as the
-// one prominent bordered surface.
+// workspace; contrast and spacing establish hierarchy, with the composer as
+// the one prominent bordered surface.
 type styles struct {
 	background color.Color
 	surface    color.Color
@@ -16,6 +16,7 @@ type styles struct {
 	muted      color.Color
 	faint      color.Color
 	accent     color.Color
+	accent2    color.Color
 	good       color.Color
 	danger     color.Color
 
@@ -53,16 +54,17 @@ type styles struct {
 
 func newStyles(dark bool) styles {
 	choose := lipgloss.LightDark(dark)
-	bg := choose(lipgloss.Color("#FBFAFC"), lipgloss.Color("#0D0C12"))
-	surface := choose(lipgloss.Color("#F2EFF5"), lipgloss.Color("#14121B"))
-	raised := choose(lipgloss.Color("#FFFFFF"), lipgloss.Color("#1E1A27"))
-	text := choose(lipgloss.Color("#26212C"), lipgloss.Color("#F6F1F8"))
-	muted := choose(lipgloss.Color("#716979"), lipgloss.Color("#AAA0B2"))
-	faint := choose(lipgloss.Color("#D2CBD7"), lipgloss.Color("#403A48"))
-	accent := choose(lipgloss.Color("#A9369E"), lipgloss.Color("#F28BE7"))
-	accent2 := choose(lipgloss.Color("#087A83"), lipgloss.Color("#71D7E0"))
-	good := choose(lipgloss.Color("#18744A"), lipgloss.Color("#75D8A8"))
-	danger := choose(lipgloss.Color("#B42335"), lipgloss.Color("#FF8794"))
+	bg := choose(lipgloss.Color("#FAFAFA"), lipgloss.Color("#101010"))
+	surface := choose(lipgloss.Color("#F1F1F1"), lipgloss.Color("#161616"))
+	raised := choose(lipgloss.Color("#FFFFFF"), lipgloss.Color("#1F1F1F"))
+	text := choose(lipgloss.Color("#202020"), lipgloss.Color("#E7E7E7"))
+	muted := choose(lipgloss.Color("#707070"), lipgloss.Color("#929292"))
+	faint := choose(lipgloss.Color("#D0D0D0"), lipgloss.Color("#4B4B4B"))
+	accent := choose(lipgloss.Color("#383838"), lipgloss.Color("#D8D8D8"))
+	accent2 := choose(lipgloss.Color("#555555"), lipgloss.Color("#BDBDBD"))
+	good := choose(lipgloss.Color("#484848"), lipgloss.Color("#CFCFCF"))
+	danger := choose(lipgloss.Color("#111111"), lipgloss.Color("#F2F2F2"))
+	mutedStyle := lipgloss.NewStyle().Foreground(muted).Faint(true)
 
 	composer := lipgloss.NewStyle().
 		Background(raised).
@@ -76,33 +78,33 @@ func newStyles(dark bool) styles {
 
 	return styles{
 		background: bg, surface: surface, text: text, muted: muted,
-		faint: faint, accent: accent, good: good, danger: danger,
+		faint: faint, accent: accent, accent2: accent2, good: good, danger: danger,
 		topbar:          lipgloss.NewStyle().Background(surface).Foreground(text),
 		brand:           lipgloss.NewStyle().Background(accent).Foreground(bg).Bold(true).Padding(0, 1),
-		crumb:           lipgloss.NewStyle().Foreground(muted).PaddingLeft(1),
+		crumb:           mutedStyle.PaddingLeft(1),
 		identity:        lipgloss.NewStyle().Foreground(accent2).Bold(true),
-		subtle:          lipgloss.NewStyle().Foreground(muted),
+		subtle:          mutedStyle,
 		sidebar:         lipgloss.NewStyle().Background(surface).Foreground(text).Padding(1, 1),
 		sidebarFocused:  lipgloss.NewStyle().Background(surface).Foreground(text).Border(lipgloss.NormalBorder(), false, true, false, false).BorderForeground(accent).Padding(1, 1),
-		section:         lipgloss.NewStyle().Foreground(muted).Bold(true),
-		room:            lipgloss.NewStyle().Foreground(muted).Padding(0, 1),
+		section:         mutedStyle.Bold(true),
+		room:            mutedStyle.Padding(0, 1),
 		roomCurrent:     lipgloss.NewStyle().Foreground(accent2).Bold(true).Padding(0, 1),
 		roomSelected:    lipgloss.NewStyle().Background(raised).Foreground(text).Bold(true).Border(lipgloss.ThickBorder(), false, false, false, true).BorderForeground(accent).PaddingLeft(1),
 		conversationBar: lipgloss.NewStyle().Foreground(text).Padding(1, 2, 0, 2),
 		topic:           lipgloss.NewStyle().Foreground(text).Bold(true),
 		turnReady:       lipgloss.NewStyle().Background(accent2).Foreground(bg).Bold(true).Padding(0, 1),
-		turnWaiting:     lipgloss.NewStyle().Background(surface).Foreground(muted).Padding(0, 1),
+		turnWaiting:     mutedStyle.Background(surface).Padding(0, 1),
 		transcript:      lipgloss.NewStyle().Foreground(text).Padding(0, 2),
 		transcriptFocus: lipgloss.NewStyle().Foreground(text).Border(lipgloss.NormalBorder(), false, false, false, true).BorderForeground(faint).PaddingLeft(1),
 		composerReady:   composer.BorderForeground(accent2),
 		composerWaiting: composer.BorderForeground(faint),
-		composerTitle:   lipgloss.NewStyle().Foreground(muted).Bold(true),
-		status:          lipgloss.NewStyle().Background(surface).Foreground(muted).Padding(0, 1),
+		composerTitle:   mutedStyle.Bold(true),
+		status:          mutedStyle.Background(surface).Padding(0, 1),
 		statusError:     lipgloss.NewStyle().Background(surface).Foreground(danger).Padding(0, 1),
 		statusGood:      lipgloss.NewStyle().Background(surface).Foreground(good).Padding(0, 1),
 		author:          lipgloss.NewStyle().Foreground(accent).Bold(true),
 		authorSelf:      lipgloss.NewStyle().Foreground(accent2).Bold(true),
-		timestamp:       lipgloss.NewStyle().Foreground(faint),
+		timestamp:       lipgloss.NewStyle().Foreground(faint).Faint(true),
 		entry:           entry,
 		entrySelf:       entry.BorderForeground(accent2).Background(surface),
 		key:             lipgloss.NewStyle().Foreground(accent).Bold(true),
